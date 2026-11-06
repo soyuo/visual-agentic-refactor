@@ -292,6 +292,18 @@ button:focus-visible {
   font-size: 12px;
 }
 
+.project-error {
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border: 1px solid #f0ceca;
+  border-radius: 8px;
+  background: #fff4f2;
+  color: #a9463e;
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .primary-button {
   display: inline-flex;
   flex: 0 0 auto;

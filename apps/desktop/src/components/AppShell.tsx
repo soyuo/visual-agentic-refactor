@@ -1,4 +1,4 @@
-import type { TaskProgressEvent } from "../lib/commands";
+import type { OpenProjectResponse, TaskProgressEvent } from "../lib/commands";
 
 export type CoreStatus =
   | { kind: "loading" }
@@ -16,7 +16,11 @@ interface AppShellProps {
   coreStatus: CoreStatus;
   coreStatusMessage: string;
   taskState: TaskUiState | null;
+  project: OpenProjectResponse | null;
+  isOpeningProject: boolean;
+  projectError: string | null;
   onCancelTask: () => void;
+  onOpenProject: () => void;
 }
 
 const navigationItems = [
@@ -109,11 +113,22 @@ function AppShell(props: AppShellProps) {
               프로젝트 파일과 기술 스택, Git 상태를 한곳에서 살펴보세요.
             </p>
           </div>
-          <button class="primary-button" type="button" disabled>
+          <button
+            class="primary-button"
+            type="button"
+            disabled={props.isOpeningProject}
+            onClick={props.onOpenProject}
+          >
             <span aria-hidden="true">＋</span>
-            프로젝트 열기
+            {props.isOpeningProject ? "폴더 선택 중..." : "프로젝트 열기"}
           </button>
         </div>
+
+        {props.projectError && (
+          <p class="project-error" role="alert">
+            {props.projectError}
+          </p>
+        )}
 
         <section class="empty-project-card" aria-labelledby="empty-project-title">
           <div class="empty-illustration" aria-hidden="true">
