@@ -1,3 +1,11 @@
+.core-status {
+  color: #475569;
+}
+
+.core-status[data-state="error"] {
+  color: #b91c1c;
+}
+
 .logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }
