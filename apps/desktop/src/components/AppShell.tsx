@@ -130,31 +130,44 @@ function AppShell(props: AppShellProps) {
           </p>
         )}
 
-        <section class="empty-project-card" aria-labelledby="empty-project-title">
-          <div class="empty-illustration" aria-hidden="true">
-            <div class="illustration-toolbar"><i /><i /><i /></div>
-            <div class="illustration-body">
-              <div class="illustration-tree">
-                <span class="tree-line wide" />
-                <span class="tree-line medium" />
-                <span class="tree-line short" />
-                <span class="tree-line medium" />
-              </div>
-              <div class="illustration-content">
-                <span class="content-line wide" />
-                <span class="content-line medium" />
-                <span class="content-block" />
+        {props.project ? (
+          <section class="opened-project-card" aria-labelledby="opened-project-title">
+            <span class="project-open-status">프로젝트 루트 확인됨</span>
+            <h2 id="opened-project-title">{props.project.name}</h2>
+            <p class="project-open-path" title={props.project.path}>
+              {props.project.path}
+            </p>
+            <p class="project-open-note">
+              파일 구조와 기술 정보는 프로젝트 스캔 기능이 연결되면 표시됩니다.
+            </p>
+          </section>
+        ) : (
+          <section class="empty-project-card" aria-labelledby="empty-project-title">
+            <div class="empty-illustration" aria-hidden="true">
+              <div class="illustration-toolbar"><i /><i /><i /></div>
+              <div class="illustration-body">
+                <div class="illustration-tree">
+                  <span class="tree-line wide" />
+                  <span class="tree-line medium" />
+                  <span class="tree-line short" />
+                  <span class="tree-line medium" />
+                </div>
+                <div class="illustration-content">
+                  <span class="content-line wide" />
+                  <span class="content-line medium" />
+                  <span class="content-block" />
+                </div>
               </div>
             </div>
-          </div>
-          <div class="empty-project-copy">
-            <span class="empty-kicker">시작하기</span>
-            <h2 id="empty-project-title">아직 열린 프로젝트가 없습니다</h2>
-            <p>
-              프로젝트를 열면 파일 트리와 감지된 기술 정보가 이 공간에 표시됩니다.
-            </p>
-          </div>
-        </section>
+            <div class="empty-project-copy">
+              <span class="empty-kicker">시작하기</span>
+              <h2 id="empty-project-title">아직 열린 프로젝트가 없습니다</h2>
+              <p>
+                프로젝트를 열면 파일 트리와 감지된 기술 정보가 이 공간에 표시됩니다.
+              </p>
+            </div>
+          </section>
+        )}
 
         <div class="content-footnote">
           <span class="footnote-dot" />
@@ -174,12 +187,21 @@ function AppShell(props: AppShellProps) {
         <section class="detail-card">
           <div class="detail-card-heading">
             <h3>프로젝트</h3>
-            <span class="muted-count">—</span>
+            <span class="muted-count">{props.project ? "열림" : "—"}</span>
           </div>
-          <div class="no-selection">
-            <span class="selection-mark" aria-hidden="true">—</span>
-            <p>선택된 프로젝트가 없습니다.</p>
-          </div>
+          {props.project ? (
+            <div class="project-detail">
+              <strong>{props.project.name}</strong>
+              <p class="project-detail-path" title={props.project.path}>
+                {props.project.path}
+              </p>
+            </div>
+          ) : (
+            <div class="no-selection">
+              <span class="selection-mark" aria-hidden="true">—</span>
+              <p>선택된 프로젝트가 없습니다.</p>
+            </div>
+          )}
         </section>
 
         <section class="detail-card core-card">
