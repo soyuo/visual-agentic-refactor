@@ -233,21 +233,36 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
                 continue;
             }
 
-            if file_type.is_symlink() {
+            let resolved_path = match fs::canonicalize(&path) {
+                Ok(resolved_path) => resolved_path,
+                Err(error) => {
+                    warnings.push(read_warning(&root, &path, &error));
+                    continue;
+                }
+            };
+            if !resolved_path.starts_with(&root) {
                 warnings.push(ScanWarning {
                     relative_path: Some(relative_path),
-                    message: "심볼릭 링크는 경계 검사를 적용한 뒤 처리합니다.".into(),
+                    message: "프로젝트 루트 밖을 가리키는 경로를 건너뛰었습니다.".into(),
                 });
                 continue;
             }
 
-            let metadata = match child.metadata() {
+            let metadata = match fs::metadata(&resolved_path) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     warnings.push(read_warning(&root, &path, &error));
                     continue;
                 }
             };
+            if file_type.is_symlink() && metadata.is_dir() {
+                warnings.push(ScanWarning {
+                    relative_path: Some(relative_path),
+                    message: "심볼릭 링크 디렉터리는 순환 및 중복 탐색 방지를 위해 건너뛰었습니다."
+                        .into(),
+                });
+                continue;
+            }
             let name = child.file_name().to_string_lossy().into_owned();
             let modified_unix_ms = metadata
                 .modified()
@@ -267,7 +282,7 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
                 });
                 summary.directories += 1;
                 if parent_depth + 1 < max_depth {
-                    pending.push((path, parent_depth + 1));
+                    pending.push((resolved_path, parent_depth + 1));
                 } else {
                     summary.depth_limit_reached = true;
                     warnings.push(ScanWarning {
@@ -293,7 +308,7 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
             } else if !is_supported_text_file(&name, extension.as_deref()) {
                 ScanFileStatus::UnsupportedType
             } else {
-                match contains_binary_marker(&path) {
+                match contains_binary_marker(&resolved_path) {
                     Ok(true) => ScanFileStatus::Binary,
                     Ok(false) => ScanFileStatus::Eligible,
                     Err(error) => {
