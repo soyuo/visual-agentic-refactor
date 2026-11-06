@@ -20,12 +20,11 @@ pub struct OpenProjectResponse {
 
 #[tauri::command]
 pub fn open_project(request: OpenProjectRequest) -> Result<OpenProjectResponse, CommandError> {
-    let selected_path = request.path.trim();
-    if selected_path.is_empty() {
+    if request.path.trim().is_empty() {
         return Err(invalid_project_path("프로젝트 경로가 비어 있습니다."));
     }
 
-    let selected_path = PathBuf::from(selected_path);
+    let selected_path = PathBuf::from(request.path);
     if !selected_path.is_absolute() {
         return Err(invalid_project_path(
             "프로젝트 경로는 절대 경로여야 합니다.",
