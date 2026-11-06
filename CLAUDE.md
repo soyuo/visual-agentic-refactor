@@ -1,0 +1,3 @@
+# Followship
+
+@AGENTS.md
