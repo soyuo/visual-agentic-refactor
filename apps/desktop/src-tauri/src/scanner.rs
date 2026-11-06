@@ -1,3 +1,4 @@
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,14 +12,17 @@ const DEFAULT_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_SCAN_ENTRIES: usize = 100_000;
 const BINARY_PROBE_BYTES: usize = 8 * 1024;
+const MAX_IGNORE_PATTERN_COUNT: usize = 256;
+const MAX_IGNORE_PATTERN_BYTES: usize = 1024;
 
-const DEFAULT_EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
-    "node_modules",
-    ".gradle",
-    "build",
-    "dist",
-    "target",
-    ".venv",
+const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
+    ".git/objects/",
+    "node_modules/",
+    ".gradle/",
+    "build/",
+    "dist/",
+    "target/",
+    ".venv/",
 ];
 
 const BINARY_EXTENSIONS: &[&str] = &[
@@ -149,6 +153,7 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
     if !metadata.is_dir() {
         return Err(invalid_scan_path("선택한 경로가 디렉터리가 아닙니다."));
     }
+    let ignore_matcher = build_ignore_matcher(&root, &options.ignore_patterns)?;
 
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
@@ -221,7 +226,10 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
                 }
             };
 
-            if file_type.is_dir() && is_default_excluded(&relative_path) {
+            if ignore_matcher
+                .matched(Path::new(&relative_path), file_type.is_dir())
+                .is_ignore()
+            {
                 continue;
             }
 
@@ -333,14 +341,32 @@ fn relative_path(root: &Path, path: &Path) -> Option<String> {
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
 }
 
-fn is_default_excluded(relative_path: &str) -> bool {
-    let segments = relative_path.split('/').collect::<Vec<_>>();
-    segments
-        .iter()
-        .any(|segment| DEFAULT_EXCLUDED_DIRECTORY_NAMES.contains(segment))
-        || segments
-            .windows(2)
-            .any(|pair| pair[0] == ".git" && pair[1] == "objects")
+fn build_ignore_matcher(root: &Path, patterns: &[String]) -> Result<Gitignore, CommandError> {
+    if patterns.len() > MAX_IGNORE_PATTERN_COUNT {
+        return Err(invalid_scan_path(
+            "제외 규칙 수가 최대 허용량을 초과했습니다.",
+        ));
+    }
+
+    let mut builder = GitignoreBuilder::new(root);
+    for pattern in DEFAULT_IGNORE_PATTERNS {
+        builder
+            .add_line(None, pattern)
+            .map_err(|_| invalid_scan_path("기본 제외 규칙을 준비하지 못했습니다."))?;
+    }
+
+    for pattern in patterns {
+        if pattern.len() > MAX_IGNORE_PATTERN_BYTES {
+            return Err(invalid_scan_path("제외 규칙이 최대 길이를 초과했습니다."));
+        }
+        builder
+            .add_line(None, pattern)
+            .map_err(|_| invalid_scan_path("제외 규칙의 형식이 올바르지 않습니다."))?;
+    }
+
+    builder
+        .build()
+        .map_err(|_| invalid_scan_path("제외 규칙을 적용할 수 없습니다."))
 }
 
 fn is_binary_extension(extension: Option<&str>) -> bool {
