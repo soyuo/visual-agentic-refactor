@@ -1,4 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+use crate::command_error::{CommandError, CommandErrorCode};
+
+const MAX_SCAN_DEPTH: usize = 32;
 
 /// Per-project rules supplied by the UI for one scan.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -69,4 +76,162 @@ pub struct ScanSummary {
     pub directories: u64,
     pub eligible_files: u64,
     pub skipped_files: u64,
+}
+
+pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, CommandError> {
+    let path = request.path;
+    if path.trim().is_empty() {
+        return Err(invalid_scan_path("프로젝트 경로가 비어 있습니다."));
+    }
+
+    let selected_path = PathBuf::from(path);
+    if !selected_path.is_absolute() {
+        return Err(invalid_scan_path("프로젝트 경로는 절대 경로여야 합니다."));
+    }
+
+    let root = fs::canonicalize(&selected_path).map_err(|error| {
+        invalid_scan_path(match error.kind() {
+            std::io::ErrorKind::NotFound => "선택한 프로젝트 경로가 존재하지 않습니다.",
+            std::io::ErrorKind::PermissionDenied => "선택한 프로젝트 경로에 접근할 수 없습니다.",
+            _ => "프로젝트 경로를 확인할 수 없습니다.",
+        })
+    })?;
+    let metadata = fs::metadata(&root)
+        .map_err(|_| invalid_scan_path("프로젝트 경로 정보를 읽을 수 없습니다."))?;
+    if !metadata.is_dir() {
+        return Err(invalid_scan_path("선택한 경로가 디렉터리가 아닙니다."));
+    }
+
+    let mut entries = Vec::new();
+    let mut warnings = Vec::new();
+    let mut summary = ScanSummary::default();
+    let mut pending = vec![(root.clone(), 0usize)];
+
+    while let Some((directory, parent_depth)) = pending.pop() {
+        let read_dir = match fs::read_dir(&directory) {
+            Ok(read_dir) => read_dir,
+            Err(error) => {
+                warnings.push(read_warning(&root, &directory, &error));
+                continue;
+            }
+        };
+
+        let mut children = Vec::new();
+        for result in read_dir {
+            match result {
+                Ok(entry) => children.push(entry),
+                Err(error) => warnings.push(read_warning(&root, &directory, &error)),
+            }
+        }
+        children.sort_by_key(|entry| entry.file_name());
+
+        for child in children {
+            let path = child.path();
+            let file_type = match child.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    warnings.push(read_warning(&root, &path, &error));
+                    continue;
+                }
+            };
+
+            if file_type.is_symlink() {
+                warnings.push(ScanWarning {
+                    relative_path: relative_path(&root, &path),
+                    message: "심볼릭 링크는 경계 검사를 적용한 뒤 처리합니다.".into(),
+                });
+                continue;
+            }
+
+            let metadata = match child.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    warnings.push(read_warning(&root, &path, &error));
+                    continue;
+                }
+            };
+            let Some(relative_path) = relative_path(&root, &path) else {
+                warnings.push(ScanWarning {
+                    relative_path: None,
+                    message: "프로젝트 루트 기준 경로를 계산하지 못했습니다.".into(),
+                });
+                continue;
+            };
+            let name = child.file_name().to_string_lossy().into_owned();
+            let modified_unix_ms = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+
+            if metadata.is_dir() {
+                entries.push(ScanEntry {
+                    relative_path,
+                    name,
+                    kind: ScanEntryKind::Directory,
+                    size_bytes: None,
+                    modified_unix_ms,
+                    extension: None,
+                    file_status: None,
+                });
+                summary.directories += 1;
+                if parent_depth + 1 < MAX_SCAN_DEPTH {
+                    pending.push((path, parent_depth + 1));
+                }
+                continue;
+            }
+
+            if !metadata.is_file() {
+                continue;
+            }
+
+            let extension = path
+                .extension()
+                .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
+            entries.push(ScanEntry {
+                relative_path,
+                name,
+                kind: ScanEntryKind::File,
+                size_bytes: Some(metadata.len()),
+                modified_unix_ms,
+                extension,
+                file_status: Some(ScanFileStatus::Eligible),
+            });
+            summary.files += 1;
+            summary.eligible_files += 1;
+        }
+    }
+
+    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    summary.entries = entries.len() as u64;
+    summary.skipped_files = summary.files.saturating_sub(summary.eligible_files);
+
+    Ok(ScanProjectResponse {
+        root_path: root.to_string_lossy().into_owned(),
+        entries,
+        warnings,
+        summary,
+    })
+}
+
+fn relative_path(root: &Path, path: &Path) -> Option<String> {
+    path.strip_prefix(root)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn read_warning(root: &Path, path: &Path, error: &std::io::Error) -> ScanWarning {
+    let reason = match error.kind() {
+        std::io::ErrorKind::PermissionDenied => "접근이 거부되었습니다.",
+        std::io::ErrorKind::NotFound => "탐색 중 항목이 사라졌습니다.",
+        _ => "항목을 읽지 못했습니다.",
+    };
+    ScanWarning {
+        relative_path: relative_path(root, path),
+        message: reason.into(),
+    }
+}
+
+fn invalid_scan_path(message: &str) -> CommandError {
+    CommandError::new(CommandErrorCode::InvalidInput, message)
 }

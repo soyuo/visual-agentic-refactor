@@ -13,6 +13,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::get_app_info,
             commands::project::open_project,
+            commands::scanner::scan_project,
             commands::tasks::cancel_task
         ])
         .run(tauri::generate_context!())

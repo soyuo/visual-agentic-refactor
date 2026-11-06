@@ -138,6 +138,16 @@ export async function openProject(path: string): Promise<OpenProjectResponse> {
   }
 }
 
+export async function scanProject(
+  request: ScanProjectRequest,
+): Promise<ScanProjectResponse> {
+  try {
+    return await invoke<ScanProjectResponse>("scan_project", { request });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
 export async function cancelTask(taskId: number): Promise<CancelTaskResponse> {
   try {
     return await invoke<CancelTaskResponse>("cancel_task", {
