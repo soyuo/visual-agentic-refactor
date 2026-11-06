@@ -7,13 +7,19 @@ import AppShell, {
 import {
   cancelTask,
   getAppInfo,
+  openProject,
   listenToTaskProgress,
   toAppCommandError,
 } from "./lib/commands";
+import { selectProjectFolder } from "./lib/projectPicker";
+import type { OpenProjectResponse } from "./lib/commands";
 
 function App() {
   const [coreStatus, setCoreStatus] = createSignal<CoreStatus>({ kind: "loading" });
   const [taskState, setTaskState] = createSignal<TaskUiState | null>(null);
+  const [project, setProject] = createSignal<OpenProjectResponse | null>(null);
+  const [isOpeningProject, setIsOpeningProject] = createSignal(false);
+  const [projectError, setProjectError] = createSignal<string | null>(null);
 
   onMount(() => {
     void getAppInfo()
@@ -78,6 +84,24 @@ function App() {
     }
   }
 
+  async function handleOpenProject() {
+    if (isOpeningProject()) return;
+
+    setIsOpeningProject(true);
+    try {
+      const selectedPath = await selectProjectFolder();
+      if (selectedPath === null) return;
+
+      setProjectError(null);
+      const openedProject = await openProject(selectedPath);
+      setProject(openedProject);
+    } catch (error: unknown) {
+      setProjectError(toAppCommandError(error).message);
+    } finally {
+      setIsOpeningProject(false);
+    }
+  }
+
   const getCoreStatusMessage = () => {
     const status = coreStatus();
     return status.kind === "loading" ? "데스크톱 코어 연결 중…" : status.message;
@@ -88,7 +112,11 @@ function App() {
       coreStatus={coreStatus()}
       coreStatusMessage={getCoreStatusMessage()}
       taskState={taskState()}
+      project={project()}
+      isOpeningProject={isOpeningProject()}
+      projectError={projectError()}
       onCancelTask={() => void requestCancellation()}
+      onOpenProject={() => void handleOpenProject()}
     />
   );
 }

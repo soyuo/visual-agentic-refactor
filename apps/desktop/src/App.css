@@ -292,6 +292,18 @@ button:focus-visible {
   font-size: 12px;
 }
 
+.project-error {
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border: 1px solid #f0ceca;
+  border-radius: 8px;
+  background: #fff4f2;
+  color: #a9463e;
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .primary-button {
   display: inline-flex;
   flex: 0 0 auto;
@@ -327,6 +339,54 @@ button:focus-visible {
   border-radius: 12px;
   background: #fff;
   box-shadow: 0 8px 24px rgb(26 40 75 / 3%);
+}
+
+.opened-project-card {
+  min-height: 230px;
+  padding: 31px 34px;
+  border: 1px solid #e7eaf0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(26 40 75 / 3%);
+}
+
+.project-open-status {
+  display: inline-flex;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: #eef7f1;
+  color: #48845e;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.opened-project-card h2 {
+  margin: 15px 0 6px;
+  color: #29344a;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.project-open-path {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid #edf0f5;
+  border-radius: 7px;
+  background: #f8f9fc;
+  color: #687489;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.project-open-note {
+  margin: 13px 0 0;
+  color: #838da0;
+  font-size: 11px;
+  line-height: 1.7;
 }
 
 .empty-illustration {
@@ -533,6 +593,22 @@ button:focus-visible {
 .no-task-message {
   margin: 0;
   font-size: 10px;
+}
+
+.project-detail {
+  margin-top: 12px;
+  color: #4c586c;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.project-detail-path {
+  margin: 6px 0 0;
+  color: #8993a5;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  line-height: 1.6;
+  user-select: text;
 }
 
 .status-pill {
