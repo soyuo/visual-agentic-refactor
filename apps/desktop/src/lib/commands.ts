@@ -30,7 +30,9 @@ export interface OpenProjectResponse {
 
 export interface ScanOptions {
   /** Gitignore-style rules; a leading `!` can re-include a default exclusion. */
-  ignorePatterns: string[];
+  ignorePatterns?: string[];
+  maxDepth?: number;
+  maxFileSizeBytes?: number;
 }
 
 export interface ScanProjectRequest {
@@ -67,6 +69,10 @@ export interface ScanSummary {
   directories: number;
   eligibleFiles: number;
   skippedFiles: number;
+  depthLimit: number;
+  fileSizeLimitBytes: number;
+  depthLimitReached: boolean;
+  entryLimitReached: boolean;
 }
 
 export interface ScanProjectResponse {
