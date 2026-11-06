@@ -23,6 +23,11 @@ export interface AppInfoResponse {
   version: string;
 }
 
+export interface OpenProjectResponse {
+  path: string;
+  name: string;
+}
+
 export type TaskStatus = "running" | "completed" | "cancelled" | "failed";
 
 export interface TaskProgressEvent {
@@ -70,6 +75,16 @@ export function toAppCommandError(error: unknown): AppCommandError {
 export async function getAppInfo(): Promise<AppInfoResponse> {
   try {
     return await invoke<AppInfoResponse>("get_app_info");
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function openProject(path: string): Promise<OpenProjectResponse> {
+  try {
+    return await invoke<OpenProjectResponse>("open_project", {
+      request: { path },
+    });
   } catch (error) {
     throw toAppCommandError(error);
   }
