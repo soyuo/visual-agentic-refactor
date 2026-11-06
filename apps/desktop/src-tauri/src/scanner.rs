@@ -2,9 +2,13 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use std::time::UNIX_EPOCH;
+use tauri::AppHandle;
 
 use crate::command_error::{CommandError, CommandErrorCode};
+use crate::events::TaskStatus;
+use crate::state::TaskControl;
 
 const DEFAULT_SCAN_DEPTH: usize = 32;
 const MAX_SCAN_DEPTH: usize = 64;
@@ -130,7 +134,45 @@ pub struct ScanSummary {
     pub entry_limit_reached: bool,
 }
 
-pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, CommandError> {
+pub fn scan_project(
+    request: ScanProjectRequest,
+    app: AppHandle,
+    task_control: TaskControl,
+) -> Result<ScanProjectResponse, CommandError> {
+    let mut progress = ScanProgress::new(&app, &task_control);
+    progress.emit_initial()?;
+    let result = scan_project_inner(request, &mut progress);
+
+    let (status, message) = match &result {
+        Ok(response) => (
+            TaskStatus::Completed,
+            format!("프로젝트 스캔 완료: {}개 항목", response.summary.entries),
+        ),
+        Err(error) if matches!(&error.code, CommandErrorCode::Cancelled) => (
+            TaskStatus::Cancelled,
+            "사용자가 프로젝트 스캔을 취소했습니다.".into(),
+        ),
+        Err(error) => (TaskStatus::Failed, error.message.clone()),
+    };
+    let status_result =
+        task_control.emit_status(&app, status, progress.completed, None, Some(message));
+
+    match result {
+        Ok(response) => {
+            status_result?;
+            Ok(response)
+        }
+        Err(error) => {
+            let _ = status_result;
+            Err(error)
+        }
+    }
+}
+
+fn scan_project_inner(
+    request: ScanProjectRequest,
+    progress: &mut ScanProgress<'_>,
+) -> Result<ScanProjectResponse, CommandError> {
     let ScanProjectRequest { path, options } = request;
     if path.trim().is_empty() {
         return Err(invalid_scan_path("프로젝트 경로가 비어 있습니다."));
@@ -173,6 +215,7 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
     let mut pending = vec![(root.clone(), 0usize)];
 
     'walk: while let Some((directory, parent_depth)) = pending.pop() {
+        progress.check_cancelled()?;
         if entries.len() >= MAX_SCAN_ENTRIES {
             summary.entry_limit_reached = true;
             warnings.push(entry_limit_warning());
@@ -190,6 +233,7 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
         let mut children = Vec::new();
         let mut hit_entry_limit = false;
         for result in read_dir {
+            progress.record_entry()?;
             if entries.len().saturating_add(children.len()) >= MAX_SCAN_ENTRIES {
                 hit_entry_limit = true;
                 warnings.push(entry_limit_warning());
@@ -203,6 +247,7 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
         children.sort_by_key(|entry| entry.file_name());
 
         for child in children {
+            progress.check_cancelled()?;
             let path = child.path();
             let Some(relative_path) = relative_path(&root, &path) else {
                 warnings.push(ScanWarning {
@@ -339,6 +384,7 @@ pub fn scan_project(request: ScanProjectRequest) -> Result<ScanProjectResponse, 
     }
 
     entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    progress.check_cancelled()?;
     summary.entries = entries.len() as u64;
     summary.skipped_files = summary.files.saturating_sub(summary.eligible_files);
 
@@ -354,6 +400,63 @@ fn relative_path(root: &Path, path: &Path) -> Option<String> {
     path.strip_prefix(root)
         .ok()
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
+
+struct ScanProgress<'a> {
+    app: &'a AppHandle,
+    task_control: &'a TaskControl,
+    completed: u64,
+    last_emitted: Instant,
+}
+
+impl<'a> ScanProgress<'a> {
+    fn new(app: &'a AppHandle, task_control: &'a TaskControl) -> Self {
+        Self {
+            app,
+            task_control,
+            completed: 0,
+            last_emitted: Instant::now(),
+        }
+    }
+
+    fn emit_initial(&mut self) -> Result<(), CommandError> {
+        self.task_control.emit_progress(
+            self.app,
+            self.completed,
+            None,
+            Some("프로젝트 파일 스캔을 시작합니다.".into()),
+        )?;
+        self.last_emitted = Instant::now();
+        Ok(())
+    }
+
+    fn record_entry(&mut self) -> Result<(), CommandError> {
+        self.check_cancelled()?;
+        self.completed += 1;
+        if self.completed % 128 == 0 || self.last_emitted.elapsed().as_millis() >= 100 {
+            self.task_control.emit_progress(
+                self.app,
+                self.completed,
+                None,
+                Some(format!(
+                    "프로젝트 파일 스캔 중: {}개 항목 확인",
+                    self.completed
+                )),
+            )?;
+            self.last_emitted = Instant::now();
+        }
+        Ok(())
+    }
+
+    fn check_cancelled(&self) -> Result<(), CommandError> {
+        if self.task_control.is_cancel_requested() {
+            return Err(CommandError::new(
+                CommandErrorCode::Cancelled,
+                "프로젝트 파일 스캔이 취소되었습니다.",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn build_ignore_matcher(root: &Path, patterns: &[String]) -> Result<Gitignore, CommandError> {
