@@ -131,3 +131,25 @@ impl Drop for TaskControl {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_request_reaches_task_and_registration_is_removed_on_drop() {
+        let state = AppState::default();
+        let task = state.register_task().expect("register task");
+        let task_id = task.task_id();
+
+        assert!(!task.is_cancel_requested());
+        state.request_cancel(task_id).expect("request cancellation");
+        assert!(task.is_cancel_requested());
+
+        drop(task);
+        let error = state
+            .request_cancel(task_id)
+            .expect_err("completed task should no longer be cancellable");
+        assert!(matches!(error.code, CommandErrorCode::InvalidInput));
+    }
+}

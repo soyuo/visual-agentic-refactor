@@ -171,7 +171,15 @@ pub fn scan_project(
 
 fn scan_project_inner(
     request: ScanProjectRequest,
-    progress: &mut ScanProgress<'_>,
+    progress: &mut dyn ScanObserver,
+) -> Result<ScanProjectResponse, CommandError> {
+    scan_project_with_entry_limit(request, progress, MAX_SCAN_ENTRIES)
+}
+
+fn scan_project_with_entry_limit(
+    request: ScanProjectRequest,
+    progress: &mut dyn ScanObserver,
+    max_entries: usize,
 ) -> Result<ScanProjectResponse, CommandError> {
     let ScanProjectRequest { path, options } = request;
     if path.trim().is_empty() {
@@ -202,7 +210,7 @@ fn scan_project_inner(
     let max_depth = options
         .max_depth
         .unwrap_or(DEFAULT_SCAN_DEPTH)
-        .min(MAX_SCAN_DEPTH);
+        .clamp(1, MAX_SCAN_DEPTH);
     let max_file_size_bytes = options
         .max_file_size_bytes
         .unwrap_or(DEFAULT_MAX_FILE_SIZE_BYTES)
@@ -216,7 +224,7 @@ fn scan_project_inner(
 
     'walk: while let Some((directory, parent_depth)) = pending.pop() {
         progress.check_cancelled()?;
-        if entries.len() >= MAX_SCAN_ENTRIES {
+        if entries.len() >= max_entries {
             summary.entry_limit_reached = true;
             warnings.push(entry_limit_warning());
             break;
@@ -234,7 +242,7 @@ fn scan_project_inner(
         let mut hit_entry_limit = false;
         for result in read_dir {
             progress.record_entry()?;
-            if entries.len().saturating_add(children.len()) >= MAX_SCAN_ENTRIES {
+            if entries.len().saturating_add(children.len()) >= max_entries {
                 hit_entry_limit = true;
                 warnings.push(entry_limit_warning());
                 break;
@@ -257,7 +265,7 @@ fn scan_project_inner(
                 continue;
             };
 
-            if entries.len() >= MAX_SCAN_ENTRIES {
+            if entries.len() >= max_entries {
                 summary.entry_limit_reached = true;
                 warnings.push(entry_limit_warning());
                 break 'walk;
@@ -285,7 +293,7 @@ fn scan_project_inner(
                     continue;
                 }
             };
-            if !resolved_path.starts_with(&root) {
+            if !is_within_root(&root, &resolved_path) {
                 warnings.push(ScanWarning {
                     relative_path: Some(relative_path),
                     message: "프로젝트 루트 밖을 가리키는 경로를 건너뛰었습니다.".into(),
@@ -409,6 +417,11 @@ struct ScanProgress<'a> {
     last_emitted: Instant,
 }
 
+trait ScanObserver {
+    fn record_entry(&mut self) -> Result<(), CommandError>;
+    fn check_cancelled(&self) -> Result<(), CommandError>;
+}
+
 impl<'a> ScanProgress<'a> {
     fn new(app: &'a AppHandle, task_control: &'a TaskControl) -> Self {
         Self {
@@ -457,6 +470,20 @@ impl<'a> ScanProgress<'a> {
         }
         Ok(())
     }
+}
+
+impl ScanObserver for ScanProgress<'_> {
+    fn record_entry(&mut self) -> Result<(), CommandError> {
+        ScanProgress::record_entry(self)
+    }
+
+    fn check_cancelled(&self) -> Result<(), CommandError> {
+        ScanProgress::check_cancelled(self)
+    }
+}
+
+fn is_within_root(root: &Path, candidate: &Path) -> bool {
+    candidate.starts_with(root)
 }
 
 fn build_ignore_matcher(root: &Path, patterns: &[String]) -> Result<Gitignore, CommandError> {
@@ -532,4 +559,310 @@ fn entry_limit_warning() -> ScanWarning {
 
 fn invalid_scan_path(message: &str) -> CommandError {
     CommandError::new(CommandErrorCode::InvalidInput, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PROJECT_ID: AtomicU64 = AtomicU64::new(1);
+
+    struct TempProject(PathBuf);
+
+    impl TempProject {
+        fn new() -> Self {
+            let id = NEXT_PROJECT_ID.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "visual-agentic-scanner-{}-{id}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root).expect("create temporary project root");
+            Self(root)
+        }
+
+        fn write(&self, relative_path: &str, contents: &[u8]) {
+            let path = self.0.join(relative_path);
+            fs::create_dir_all(path.parent().expect("file parent"))
+                .expect("create temporary project directory");
+            fs::write(path, contents).expect("write temporary project file");
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[derive(Default)]
+    struct TestObserver {
+        completed: u64,
+        cancel_after: Option<u64>,
+    }
+
+    impl ScanObserver for TestObserver {
+        fn record_entry(&mut self) -> Result<(), CommandError> {
+            self.check_cancelled()?;
+            self.completed += 1;
+            Ok(())
+        }
+
+        fn check_cancelled(&self) -> Result<(), CommandError> {
+            if self
+                .cancel_after
+                .is_some_and(|limit| self.completed >= limit)
+            {
+                return Err(CommandError::new(
+                    CommandErrorCode::Cancelled,
+                    "test cancellation",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    fn request(root: &Path, options: ScanOptions) -> ScanProjectRequest {
+        ScanProjectRequest {
+            path: root.to_string_lossy().into_owned(),
+            options,
+        }
+    }
+
+    fn scan(root: &Path, options: ScanOptions) -> Result<ScanProjectResponse, CommandError> {
+        scan_project_inner(request(root, options), &mut TestObserver::default())
+    }
+
+    fn find_entry<'a>(response: &'a ScanProjectResponse, path: &str) -> &'a ScanEntry {
+        response
+            .entries
+            .iter()
+            .find(|entry| entry.relative_path == path)
+            .unwrap_or_else(|| panic!("missing scan entry: {path}"))
+    }
+
+    #[test]
+    fn scans_metadata_excludes_defaults_applies_overrides_and_preserves_files() {
+        let project = TempProject::new();
+        project.write("src/Main.kt", b"package sample\n");
+        project.write("src/private/Secret.kt", b"private\n");
+        project.write("src/large.kt", b"12345678901234567890");
+        project.write("src/binary.kt", b"\0binary");
+        project.write("docs/README.md", b"read me");
+        project.write("docs/data.csv", b"a,b\n1,2\n");
+        project.write("assets/icon.png", b"png bytes");
+        project.write("node_modules/pkg/Hidden.kt", b"hidden\n");
+        project.write(".gradle/cache/Hidden.kt", b"hidden\n");
+        project.write("build/generated.kt", b"generated\n");
+        project.write("dist/Hidden.kt", b"hidden\n");
+        project.write("target/Hidden.kt", b"hidden\n");
+        project.write(".venv/Hidden.kt", b"hidden\n");
+        project.write(".git/objects/ab/object.kt", b"hidden\n");
+
+        let response = scan(
+            &project.0,
+            ScanOptions {
+                ignore_patterns: vec!["src/private/".into(), "!build/".into()],
+                max_depth: None,
+                max_file_size_bytes: Some(16),
+            },
+        )
+        .expect("scan project");
+        let paths = response
+            .entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"src/Main.kt"));
+        assert!(paths.contains(&"build/generated.kt"));
+        assert!(!paths.contains(&"src/private/Secret.kt"));
+        for excluded in [
+            "node_modules/pkg/Hidden.kt",
+            ".gradle/cache/Hidden.kt",
+            "dist/Hidden.kt",
+            "target/Hidden.kt",
+            ".venv/Hidden.kt",
+            ".git/objects/ab/object.kt",
+        ] {
+            assert!(
+                !paths.contains(&excluded),
+                "unexpected included path: {excluded}"
+            );
+        }
+
+        assert!(matches!(
+            &find_entry(&response, "src/Main.kt").file_status,
+            Some(ScanFileStatus::Eligible)
+        ));
+        assert!(matches!(
+            &find_entry(&response, "src/large.kt").file_status,
+            Some(ScanFileStatus::TooLarge)
+        ));
+        assert!(matches!(
+            &find_entry(&response, "src/binary.kt").file_status,
+            Some(ScanFileStatus::Binary)
+        ));
+        assert!(matches!(
+            &find_entry(&response, "assets/icon.png").file_status,
+            Some(ScanFileStatus::Binary)
+        ));
+        assert!(matches!(
+            &find_entry(&response, "docs/data.csv").file_status,
+            Some(ScanFileStatus::UnsupportedType)
+        ));
+        assert_eq!(response.summary.file_size_limit_bytes, 16);
+        assert_eq!(find_entry(&response, "src/Main.kt").size_bytes, Some(15));
+        assert!(
+            find_entry(&response, "src/Main.kt")
+                .modified_unix_ms
+                .is_some()
+        );
+        assert_eq!(
+            fs::read(project.0.join("src/Main.kt")).unwrap(),
+            b"package sample\n"
+        );
+    }
+
+    #[test]
+    fn enforces_depth_and_entry_limits_and_clamps_requested_depth() {
+        let project = TempProject::new();
+        project.write("Top.kt", b"top\n");
+        project.write("level1/level2/Deep.kt", b"deep\n");
+        project.write("first.kt", b"first\n");
+        project.write("second.kt", b"second\n");
+        project.write("third.kt", b"third\n");
+
+        let depth_limited = scan(
+            &project.0,
+            ScanOptions {
+                max_depth: Some(1),
+                ..ScanOptions::default()
+            },
+        )
+        .expect("depth-limited scan");
+        assert!(depth_limited.summary.depth_limit_reached);
+        assert!(
+            !depth_limited
+                .entries
+                .iter()
+                .any(|entry| entry.relative_path == "level1/level2/Deep.kt")
+        );
+
+        let clamped = scan(
+            &project.0,
+            ScanOptions {
+                max_depth: Some(usize::MAX),
+                max_file_size_bytes: Some(u64::MAX),
+                ..ScanOptions::default()
+            },
+        )
+        .expect("scan with requested depth above cap");
+        assert_eq!(clamped.summary.depth_limit, MAX_SCAN_DEPTH as u64);
+        assert_eq!(clamped.summary.file_size_limit_bytes, MAX_FILE_SIZE_BYTES);
+
+        let minimum_depth = scan(
+            &project.0,
+            ScanOptions {
+                max_depth: Some(0),
+                ..ScanOptions::default()
+            },
+        )
+        .expect("scan with requested depth below minimum");
+        assert_eq!(minimum_depth.summary.depth_limit, 1);
+
+        let mut observer = TestObserver::default();
+        let entry_limited = scan_project_with_entry_limit(
+            request(&project.0, ScanOptions::default()),
+            &mut observer,
+            2,
+        )
+        .expect("entry-limited scan");
+        assert_eq!(entry_limited.summary.entries, 2);
+        assert!(entry_limited.summary.entry_limit_reached);
+    }
+
+    #[test]
+    fn rejects_oversized_ignore_patterns_and_cancels_cooperatively() {
+        let project = TempProject::new();
+        project.write("src/One.kt", b"one\n");
+        project.write("src/Two.kt", b"two\n");
+
+        let invalid = scan(
+            &project.0,
+            ScanOptions {
+                ignore_patterns: vec!["x".repeat(MAX_IGNORE_PATTERN_BYTES + 1)],
+                ..ScanOptions::default()
+            },
+        )
+        .expect_err("oversized ignore pattern should fail");
+        assert!(matches!(invalid.code, CommandErrorCode::InvalidInput));
+
+        let mut observer = TestObserver {
+            completed: 0,
+            cancel_after: Some(1),
+        };
+        let cancelled =
+            scan_project_inner(request(&project.0, ScanOptions::default()), &mut observer)
+                .expect_err("scan should observe cancellation");
+        assert!(matches!(cancelled.code, CommandErrorCode::Cancelled));
+    }
+
+    #[test]
+    fn root_confinement_uses_path_components() {
+        assert!(is_within_root(
+            Path::new("project"),
+            Path::new("project/src/Main.kt")
+        ));
+        assert!(!is_within_root(
+            Path::new("project"),
+            Path::new("project-sibling/secret.kt")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confines_symlinks_and_reports_skipped_targets() {
+        use std::os::unix::fs::symlink;
+
+        let project = TempProject::new();
+        let outside = TempProject::new();
+        project.write("src/Internal.kt", b"inside\n");
+        outside.write("Secret.kt", b"outside\n");
+        fs::create_dir_all(project.0.join("links")).unwrap();
+        symlink(
+            project.0.join("src/Internal.kt"),
+            project.0.join("links/Internal.kt"),
+        )
+        .unwrap();
+        symlink(
+            outside.0.join("Secret.kt"),
+            project.0.join("links/Outside.kt"),
+        )
+        .unwrap();
+        symlink(&project.0, project.0.join("links/Loop")).unwrap();
+
+        let response = scan(&project.0, ScanOptions::default()).expect("scan symlinks");
+        let paths = response
+            .entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"links/Internal.kt"));
+        assert!(!paths.contains(&"links/Outside.kt"));
+        assert!(!paths.contains(&"links/Loop"));
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|warning| { warning.relative_path.as_deref() == Some("links/Outside.kt") })
+        );
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|warning| { warning.relative_path.as_deref() == Some("links/Loop") })
+        );
+        assert_eq!(fs::read(outside.0.join("Secret.kt")).unwrap(), b"outside\n");
+    }
 }
