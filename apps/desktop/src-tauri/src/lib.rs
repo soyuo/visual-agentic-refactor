@@ -1,6 +1,7 @@
 pub mod command_error;
 pub mod commands;
 pub mod events;
+pub mod scanner;
 pub mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

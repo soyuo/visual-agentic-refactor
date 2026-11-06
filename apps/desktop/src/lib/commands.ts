@@ -28,6 +28,54 @@ export interface OpenProjectResponse {
   name: string;
 }
 
+export interface ScanOptions {
+  /** Gitignore-style rules; a leading `!` can re-include a default exclusion. */
+  ignorePatterns: string[];
+}
+
+export interface ScanProjectRequest {
+  path: string;
+  options?: ScanOptions;
+}
+
+export type ScanEntryKind = "directory" | "file";
+
+export type ScanFileStatus =
+  | "eligible"
+  | "unsupportedType"
+  | "tooLarge"
+  | "binary";
+
+export interface ScanEntry {
+  relativePath: string;
+  name: string;
+  kind: ScanEntryKind;
+  sizeBytes: number | null;
+  modifiedUnixMs: number | null;
+  extension: string | null;
+  fileStatus: ScanFileStatus | null;
+}
+
+export interface ScanWarning {
+  relativePath: string | null;
+  message: string;
+}
+
+export interface ScanSummary {
+  entries: number;
+  files: number;
+  directories: number;
+  eligibleFiles: number;
+  skippedFiles: number;
+}
+
+export interface ScanProjectResponse {
+  rootPath: string;
+  entries: ScanEntry[];
+  warnings: ScanWarning[];
+  summary: ScanSummary;
+}
+
 export type TaskStatus = "running" | "completed" | "cancelled" | "failed";
 
 export interface TaskProgressEvent {
