@@ -6,6 +6,28 @@
   color: #b91c1c;
 }
 
+.core-status[data-state="cancelled"],
+.task-state[data-state="cancelled"] {
+  color: #a16207;
+}
+
+.task-state[data-state="failed"] {
+  color: #b91c1c;
+}
+
+.task-status {
+  width: min(28rem, calc(100% - 2rem));
+  margin: 1rem auto;
+  padding: 1rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  text-align: left;
+}
+
+.task-status progress {
+  width: 100%;
+}
+
 .logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }

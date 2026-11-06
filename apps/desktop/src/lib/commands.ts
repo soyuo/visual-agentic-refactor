@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type CommandErrorCode = "invalidInput" | "cancelled" | "internal";
 
@@ -20,6 +21,21 @@ export class AppCommandError extends Error {
 export interface AppInfoResponse {
   appName: string;
   version: string;
+}
+
+export type TaskStatus = "running" | "completed" | "cancelled" | "failed";
+
+export interface TaskProgressEvent {
+  taskId: number;
+  status: TaskStatus;
+  completed: number;
+  total: number | null;
+  message: string | null;
+}
+
+export interface CancelTaskResponse {
+  taskId: number;
+  cancellationRequested: boolean;
 }
 
 const commandErrorCodes: readonly string[] = [
@@ -54,6 +70,28 @@ export function toAppCommandError(error: unknown): AppCommandError {
 export async function getAppInfo(): Promise<AppInfoResponse> {
   try {
     return await invoke<AppInfoResponse>("get_app_info");
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function cancelTask(taskId: number): Promise<CancelTaskResponse> {
+  try {
+    return await invoke<CancelTaskResponse>("cancel_task", {
+      request: { taskId },
+    });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function listenToTaskProgress(
+  onProgress: (event: TaskProgressEvent) => void,
+): Promise<UnlistenFn> {
+  try {
+    return await listen<TaskProgressEvent>("task-progress", (event) => {
+      onProgress(event.payload);
+    });
   } catch (error) {
     throw toAppCommandError(error);
   }
