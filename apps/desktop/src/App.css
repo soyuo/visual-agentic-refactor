@@ -389,6 +389,95 @@ button:focus-visible {
   line-height: 1.7;
 }
 
+.file-explorer {
+  margin-top: 25px;
+  padding-top: 19px;
+  border-top: 1px solid #edf0f5;
+}
+
+.file-explorer-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.file-explorer-heading h3 {
+  margin: 0;
+  color: #354057;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.file-explorer-heading span {
+  color: #929bab;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-tree {
+  max-height: 520px;
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid #e9edf3;
+  border-radius: 8px;
+  background: #fbfcfe;
+  overscroll-behavior: contain;
+}
+
+.file-tree-node {
+  min-width: 0;
+  border-radius: 5px;
+  color: #46536a;
+  cursor: default;
+  outline: none;
+}
+
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  min-width: 0;
+  padding: 0 7px 0 calc(7px + (var(--tree-level) - 1) * 16px);
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.file-tree-node:hover .file-tree-row {
+  background: #f0f3fa;
+}
+
+.file-tree-node.selected .file-tree-row {
+  background: #eaf0ff;
+  color: #3455bd;
+}
+
+.file-tree-node:focus-visible .file-tree-row {
+  outline: 2px solid #a9c5ff;
+  outline-offset: 1px;
+}
+
+.file-tree-chevron {
+  flex: 0 0 12px;
+  width: 12px;
+  color: #8490a4;
+  text-align: center;
+}
+
+.file-tree-icon {
+  flex: 0 0 15px;
+  color: #7a8dbb;
+  text-align: center;
+}
+
+.file-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .project-scan-status {
   display: grid;
   justify-items: start;

@@ -13,13 +13,14 @@ import {
   toAppCommandError,
 } from "./lib/commands";
 import { selectProjectFolder } from "./lib/projectPicker";
-import type { OpenProjectResponse, ScanProjectResponse } from "./lib/commands";
+import type { OpenProjectResponse, ScanEntry, ScanProjectResponse } from "./lib/commands";
 
 function App() {
   const [coreStatus, setCoreStatus] = createSignal<CoreStatus>({ kind: "loading" });
   const [taskState, setTaskState] = createSignal<TaskUiState | null>(null);
   const [project, setProject] = createSignal<OpenProjectResponse | null>(null);
   const [scanResult, setScanResult] = createSignal<ScanProjectResponse | null>(null);
+  const [selectedEntry, setSelectedEntry] = createSignal<ScanEntry | null>(null);
   const [scanStatus, setScanStatus] = createSignal<"idle" | "scanning" | "complete" | "cancelled" | "error">("idle");
   const [scanMessage, setScanMessage] = createSignal<string | null>(null);
   const [isScanning, setIsScanning] = createSignal(false);
@@ -101,6 +102,7 @@ function App() {
       const openedProject = await openProject(selectedPath);
       setProject(openedProject);
       setScanResult(null);
+      setSelectedEntry(null);
       setScanMessage(null);
       setIsOpeningProject(false);
       await scanOpenedProject(openedProject.path);
@@ -147,6 +149,8 @@ function App() {
       taskState={taskState()}
       project={project()}
       scanResult={scanResult()}
+      selectedEntry={selectedEntry()}
+      onSelectEntry={setSelectedEntry}
       scanStatus={scanStatus()}
       scanMessage={scanMessage()}
       isScanning={isScanning()}

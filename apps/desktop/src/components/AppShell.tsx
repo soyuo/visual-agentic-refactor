@@ -1,8 +1,10 @@
 import type {
   OpenProjectResponse,
+  ScanEntry,
   ScanProjectResponse,
   TaskProgressEvent,
 } from "../lib/commands";
+import FileTree from "./FileTree";
 
 export type CoreStatus =
   | { kind: "loading" }
@@ -22,6 +24,7 @@ interface AppShellProps {
   taskState: TaskUiState | null;
   project: OpenProjectResponse | null;
   scanResult: ScanProjectResponse | null;
+  selectedEntry: ScanEntry | null;
   scanStatus: "idle" | "scanning" | "complete" | "cancelled" | "error";
   scanMessage: string | null;
   isScanning: boolean;
@@ -30,6 +33,7 @@ interface AppShellProps {
   onCancelTask: () => void;
   onOpenProject: () => void;
   onRescanProject: () => void;
+  onSelectEntry: (entry: ScanEntry) => void;
 }
 
 const navigationItems = [
@@ -176,6 +180,19 @@ function AppShell(props: AppShellProps) {
                 </button>
               )}
             </div>
+            {props.scanResult && (
+              <section class="file-explorer" aria-labelledby="file-tree-title">
+                <div class="file-explorer-heading">
+                  <h3 id="file-tree-title">파일 트리</h3>
+                  <span>{props.scanResult.summary.entries.toLocaleString()}개 항목</span>
+                </div>
+                <FileTree
+                  entries={props.scanResult.entries}
+                  selectedPath={props.selectedEntry?.relativePath ?? null}
+                  onSelect={props.onSelectEntry}
+                />
+              </section>
+            )}
           </section>
         ) : (
           <section class="empty-project-card" aria-labelledby="empty-project-title">
