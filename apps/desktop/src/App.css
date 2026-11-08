@@ -688,6 +688,136 @@ button:focus-visible {
   margin: 0;
 }
 
+.git-status-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 13px;
+  border: 1px solid #e7ebf2;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.git-status-heading,
+.git-status-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.git-status-heading {
+  justify-content: space-between;
+}
+
+.git-status-heading h3 {
+  margin: 0;
+  color: #354057;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.git-status-label {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #e8f5ee;
+  color: #34744e;
+  font-size: 9px;
+}
+
+.git-status-label.gitUnavailable,
+.git-status-label.notRepository {
+  background: #f0f2f6;
+  color: #687386;
+}
+
+.git-status-label.error {
+  background: #fff0ee;
+  color: #a94e45;
+}
+
+.git-status-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(115px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.git-status-summary > div {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid #edf0f5;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.git-status-summary dt {
+  color: #929bab;
+  font-size: 9px;
+}
+
+.git-status-summary dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  color: #46536b;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-change-list {
+  display: grid;
+  gap: 5px;
+  max-height: 230px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.git-change-list li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid #edf0f5;
+  border-radius: 5px;
+  background: #fff;
+}
+
+.git-change-kind {
+  color: #816a2d;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  text-align: center;
+}
+
+.git-change-kind.untracked {
+  color: #8a5a2b;
+}
+
+.git-change-list code {
+  min-width: 0;
+  overflow: hidden;
+  color: #5e6e8d;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-status-message,
+.git-change-overflow {
+  margin: 0;
+  color: #7e899b;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.git-status-message.error {
+  color: #a94e45;
+}
+
 .secondary-button {
   min-height: 32px;
   padding: 0 10px;

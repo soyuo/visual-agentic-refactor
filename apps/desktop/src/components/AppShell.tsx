@@ -94,6 +94,13 @@ function getDetectionStatusLabel(status: DetectionStatus): string {
   return "감지되지 않음";
 }
 
+function getGitStatusLabel(status: GitStatusResponse["state"]): string {
+  if (status === "available") return "저장소 상태 확인됨";
+  if (status === "gitUnavailable") return "Git을 사용할 수 없음";
+  if (status === "notRepository") return "Git 저장소가 아님";
+  return "Git 상태 조회 오류";
+}
+
 function AppShell(props: AppShellProps) {
   const detectionRows = () => {
     const detection = props.scanResult?.projectDetection;
@@ -227,6 +234,85 @@ function AppShell(props: AppShellProps) {
                 </button>
               )}
             </div>
+            <section class="git-status-card" aria-labelledby="git-status-title" aria-live="polite">
+              <div class="git-status-heading">
+                <div>
+                  <h3 id="git-status-title">Git 상태</h3>
+                  {props.gitStatus && (
+                    <span class={`git-status-label ${props.gitStatus.state}`}>
+                      {getGitStatusLabel(props.gitStatus.state)}
+                    </span>
+                  )}
+                </div>
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={props.isGitStatusLoading}
+                  onClick={props.onRefreshGitStatus}
+                >
+                  {props.isGitStatusLoading ? "조회 중..." : "새로고침"}
+                </button>
+              </div>
+              {props.isGitStatusLoading && !props.gitStatus && (
+                <p class="git-status-message">저장소 상태를 확인하고 있습니다.</p>
+              )}
+              {props.gitStatusError && (
+                <p class="inline-error" role="alert">{props.gitStatusError}</p>
+              )}
+              {props.gitStatus && props.gitStatus.state !== "available" && (
+                <p class={`git-status-message ${props.gitStatus.state === "error" ? "error" : ""}`}>
+                  {props.gitStatus.message}
+                </p>
+              )}
+              {props.gitStatus?.state === "available" && (
+                <>
+                  <dl class="git-status-summary">
+                    <div>
+                      <dt>브랜치</dt>
+                      <dd>{props.gitStatus.branch ?? (props.gitStatus.head ? "분리된 HEAD" : "첫 커밋 전")}</dd>
+                    </div>
+                    <div>
+                      <dt>HEAD</dt>
+                      <dd title={props.gitStatus.head ?? undefined}>{props.gitStatus.head ?? "커밋 없음"}</dd>
+                    </div>
+                    <div>
+                      <dt>추적 파일</dt>
+                      <dd>{props.gitStatus.trackedCount.toLocaleString()}</dd>
+                    </div>
+                    <div>
+                      <dt>변경됨</dt>
+                      <dd>{props.gitStatus.modifiedCount.toLocaleString()}</dd>
+                    </div>
+                    <div>
+                      <dt>추적되지 않음</dt>
+                      <dd>{props.gitStatus.untrackedCount.toLocaleString()}</dd>
+                    </div>
+                  </dl>
+                  {props.gitStatus.changes.length > 0 ? (
+                    <>
+                      <ul class="git-change-list" aria-label="Git 변경 파일">
+                        {props.gitStatus.changes.slice(0, 20).map((change) => (
+                          <li>
+                            <span class={`git-change-kind ${change.kind}`}>{change.statusCode}</span>
+                            <code title={change.path}>{change.path}</code>
+                          </li>
+                        ))}
+                      </ul>
+                      {(props.gitStatus.omittedChangeCount > 0 || props.gitStatus.changes.length > 20) && (
+                        <p class="git-change-overflow">
+                          나머지 {(
+                            props.gitStatus.omittedChangeCount +
+                            Math.max(0, props.gitStatus.changes.length - 20)
+                          ).toLocaleString()}개 변경 경로는 생략했습니다.
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p class="git-status-message">변경된 파일이 없습니다.</p>
+                  )}
+                </>
+              )}
+            </section>
             {props.scanResult && (
               <section class="file-explorer" aria-labelledby="file-tree-title">
                 <section class="project-detection" aria-labelledby="project-detection-title">
