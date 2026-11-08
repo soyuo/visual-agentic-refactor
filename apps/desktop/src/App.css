@@ -510,9 +510,10 @@ button:focus-visible {
 }
 
 .file-tree {
-  max-height: 520px;
+  height: 522px;
+  max-height: 522px;
   overflow: auto;
-  padding: 5px;
+  padding: 0;
   border: 1px solid #e9edf3;
   border-radius: 8px;
   background: #fbfcfe;
@@ -520,6 +521,7 @@ button:focus-visible {
 }
 
 .file-tree-node {
+  height: 30px;
   min-width: 0;
   border-radius: 5px;
   color: #46536a;
