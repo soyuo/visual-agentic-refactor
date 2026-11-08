@@ -84,6 +84,7 @@ pub struct ScanProjectResponse {
     pub warnings: Vec<ScanWarning>,
     pub summary: ScanSummary,
     pub project_detection: crate::project_detection::ProjectDetection,
+    pub persistence_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -404,6 +405,7 @@ fn scan_project_with_entry_limit(
         warnings,
         summary,
         project_detection,
+        persistence_error: None,
     })
 }
 
