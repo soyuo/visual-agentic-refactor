@@ -1,4 +1,11 @@
-import type { OpenProjectResponse, TaskProgressEvent } from "../lib/commands";
+import type {
+  OpenProjectResponse,
+  ScanEntry,
+  ScanFileStatus,
+  ScanProjectResponse,
+  TaskProgressEvent,
+} from "../lib/commands";
+import FileTree from "./FileTree";
 
 export type CoreStatus =
   | { kind: "loading" }
@@ -17,10 +24,17 @@ interface AppShellProps {
   coreStatusMessage: string;
   taskState: TaskUiState | null;
   project: OpenProjectResponse | null;
+  scanResult: ScanProjectResponse | null;
+  selectedEntry: ScanEntry | null;
+  scanStatus: "idle" | "scanning" | "complete" | "cancelled" | "error";
+  scanMessage: string | null;
+  isScanning: boolean;
   isOpeningProject: boolean;
   projectError: string | null;
   onCancelTask: () => void;
   onOpenProject: () => void;
+  onRescanProject: () => void;
+  onSelectEntry: (entry: ScanEntry) => void;
 }
 
 const navigationItems = [
@@ -44,6 +58,27 @@ function getTaskStatusLabel(task: TaskUiState): string {
   if (task.event.status === "failed") return "오류";
   if (task.cancellationRequested) return "취소 요청 중";
   return "진행 중";
+}
+
+function formatFileSize(bytes: number | null): string {
+  if (bytes == null) return "정보 없음";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatModifiedDate(timestamp: number | null): string {
+  if (timestamp == null) return "정보 없음";
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? "정보 없음" : date.toLocaleString();
+}
+
+function getFileStatusLabel(status: ScanFileStatus | null): string {
+  if (status === "eligible") return "분석 대상 가능";
+  if (status === "unsupportedType") return "지원하지 않는 형식";
+  if (status === "tooLarge") return "크기 제한 초과";
+  if (status === "binary") return "바이너리 파일";
+  return "해당 없음";
 }
 
 function AppShell(props: AppShellProps) {
@@ -116,11 +151,15 @@ function AppShell(props: AppShellProps) {
           <button
             class="primary-button"
             type="button"
-            disabled={props.isOpeningProject}
+            disabled={props.isOpeningProject || props.isScanning}
             onClick={props.onOpenProject}
           >
             <span aria-hidden="true">＋</span>
-            {props.isOpeningProject ? "폴더 선택 중..." : "프로젝트 열기"}
+            {props.isOpeningProject
+              ? "폴더 선택 중..."
+              : props.isScanning
+                ? "스캔 중..."
+                : "프로젝트 열기"}
           </button>
         </div>
 
@@ -137,9 +176,94 @@ function AppShell(props: AppShellProps) {
             <p class="project-open-path" title={props.project.path}>
               {props.project.path}
             </p>
-            <p class="project-open-note">
-              파일 구조와 기술 정보는 프로젝트 스캔 기능이 연결되면 표시됩니다.
-            </p>
+            <div class="project-scan-status" aria-live="polite">
+              {props.scanStatus === "scanning" && (
+                <p class="project-open-note">프로젝트 파일을 읽는 중입니다...</p>
+              )}
+              {props.scanStatus === "complete" && props.scanResult && (
+                <p class="project-open-note">
+                  {props.scanResult.summary.entries.toLocaleString()}개 항목을 찾았습니다.
+                </p>
+              )}
+              {(props.scanStatus === "error" || props.scanStatus === "cancelled") && (
+                <p class="inline-error" role="alert">
+                  {props.scanMessage ??
+                    (props.scanStatus === "cancelled" ? "스캔이 취소되었습니다." : "스캔에 실패했습니다.")}
+                </p>
+              )}
+              {props.scanStatus !== "scanning" && (
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={props.isScanning}
+                  onClick={props.onRescanProject}
+                >
+                  다시 스캔
+                </button>
+              )}
+            </div>
+            {props.scanResult && (
+              <section class="file-explorer" aria-labelledby="file-tree-title">
+                <div class="file-explorer-heading">
+                  <h3 id="file-tree-title">파일 트리</h3>
+                  <span>{props.scanResult.summary.entries.toLocaleString()}개 항목</span>
+                </div>
+                <p class="scan-summary-line">
+                  파일 {props.scanResult.summary.files.toLocaleString()}개 · 디렉터리{" "}
+                  {props.scanResult.summary.directories.toLocaleString()}개 · 분석 가능{" "}
+                  {props.scanResult.summary.eligibleFiles.toLocaleString()}개 · 제외{" "}
+                  {props.scanResult.summary.skippedFiles.toLocaleString()}개
+                </p>
+                {(props.scanResult.summary.depthLimitReached ||
+                  props.scanResult.summary.entryLimitReached) && (
+                  <div class="scan-limit-notice" role="status">
+                    {props.scanResult.summary.depthLimitReached && (
+                      <span>최대 탐색 깊이 {props.scanResult.summary.depthLimit}에 도달했습니다.</span>
+                    )}
+                    {props.scanResult.summary.entryLimitReached && (
+                      <span>항목 수 제한에 도달해 나머지는 생략했습니다.</span>
+                    )}
+                  </div>
+                )}
+                {props.scanResult.entries.length > 0 ? (
+                  <FileTree
+                    entries={props.scanResult.entries}
+                    selectedPath={props.selectedEntry?.relativePath ?? null}
+                    onSelect={props.onSelectEntry}
+                  />
+                ) : (
+                  <div class="scan-empty-state" role="status">
+                    <span aria-hidden="true">⌕</span>
+                    <strong>표시할 파일이 없습니다</strong>
+                    <p>
+                      비어 있거나 기본 제외 규칙에 해당하는 항목만 있는 프로젝트일 수 있습니다.
+                    </p>
+                  </div>
+                )}
+                {props.scanResult.warnings.length > 0 && (
+                  <details class="scan-warnings">
+                    <summary>
+                      경고 {props.scanResult.warnings.length.toLocaleString()}개
+                    </summary>
+                    <ul>
+                      {props.scanResult.warnings.slice(0, 20).map((warning) => (
+                        <li>
+                          {warning.relativePath && (
+                            <code title={warning.relativePath}>{warning.relativePath}</code>
+                          )}
+                          <span>{warning.message}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {props.scanResult.warnings.length > 20 && (
+                      <p class="scan-warning-overflow">
+                        나머지 {props.scanResult.warnings.length - 20}개 경고는 목록에서 생략했습니다.
+                      </p>
+                    )}
+                  </details>
+                )}
+              </section>
+            )}
           </section>
         ) : (
           <section class="empty-project-card" aria-labelledby="empty-project-title">
@@ -183,6 +307,62 @@ function AppShell(props: AppShellProps) {
           </div>
           <span class="details-menu-mark" aria-hidden="true">···</span>
         </div>
+
+        <section class="detail-card" aria-labelledby="selected-entry-title">
+          <div class="detail-card-heading">
+            <h3 id="selected-entry-title">선택 항목</h3>
+            <span class="muted-count">
+              {props.selectedEntry
+                ? props.selectedEntry.kind === "directory"
+                  ? "디렉터리"
+                  : "파일"
+                : "—"}
+            </span>
+          </div>
+          {props.selectedEntry ? (
+            <dl class="entry-details">
+              <div>
+                <dt>이름</dt>
+                <dd title={props.selectedEntry.name}>{props.selectedEntry.name}</dd>
+              </div>
+              <div>
+                <dt>상대 경로</dt>
+                <dd title={props.selectedEntry.relativePath}>
+                  {props.selectedEntry.relativePath}
+                </dd>
+              </div>
+              <div>
+                <dt>종류</dt>
+                <dd>{props.selectedEntry.kind === "directory" ? "디렉터리" : "파일"}</dd>
+              </div>
+              <div>
+                <dt>크기</dt>
+                <dd>{formatFileSize(props.selectedEntry.sizeBytes)}</dd>
+              </div>
+              <div>
+                <dt>수정 시각</dt>
+                <dd>{formatModifiedDate(props.selectedEntry.modifiedUnixMs)}</dd>
+              </div>
+              {props.selectedEntry.kind === "file" && (
+                <>
+                  <div>
+                    <dt>확장자</dt>
+                    <dd>{props.selectedEntry.extension ?? "없음"}</dd>
+                  </div>
+                  <div>
+                    <dt>스캔 분류</dt>
+                    <dd>{getFileStatusLabel(props.selectedEntry.fileStatus)}</dd>
+                  </div>
+                </>
+              )}
+            </dl>
+          ) : (
+            <div class="no-selection">
+              <span class="selection-mark" aria-hidden="true">—</span>
+              <p>트리에서 파일이나 디렉터리를 선택하세요.</p>
+            </div>
+          )}
+        </section>
 
         <section class="detail-card">
           <div class="detail-card-heading">

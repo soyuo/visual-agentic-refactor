@@ -8,16 +8,22 @@ import {
   cancelTask,
   getAppInfo,
   openProject,
+  scanProject,
   listenToTaskProgress,
   toAppCommandError,
 } from "./lib/commands";
 import { selectProjectFolder } from "./lib/projectPicker";
-import type { OpenProjectResponse } from "./lib/commands";
+import type { OpenProjectResponse, ScanEntry, ScanProjectResponse } from "./lib/commands";
 
 function App() {
   const [coreStatus, setCoreStatus] = createSignal<CoreStatus>({ kind: "loading" });
   const [taskState, setTaskState] = createSignal<TaskUiState | null>(null);
   const [project, setProject] = createSignal<OpenProjectResponse | null>(null);
+  const [scanResult, setScanResult] = createSignal<ScanProjectResponse | null>(null);
+  const [selectedEntry, setSelectedEntry] = createSignal<ScanEntry | null>(null);
+  const [scanStatus, setScanStatus] = createSignal<"idle" | "scanning" | "complete" | "cancelled" | "error">("idle");
+  const [scanMessage, setScanMessage] = createSignal<string | null>(null);
+  const [isScanning, setIsScanning] = createSignal(false);
   const [isOpeningProject, setIsOpeningProject] = createSignal(false);
   const [projectError, setProjectError] = createSignal<string | null>(null);
 
@@ -85,7 +91,7 @@ function App() {
   }
 
   async function handleOpenProject() {
-    if (isOpeningProject()) return;
+    if (isOpeningProject() || isScanning()) return;
 
     setIsOpeningProject(true);
     try {
@@ -95,11 +101,41 @@ function App() {
       setProjectError(null);
       const openedProject = await openProject(selectedPath);
       setProject(openedProject);
+      setScanResult(null);
+      setSelectedEntry(null);
+      setScanMessage(null);
+      setIsOpeningProject(false);
+      await scanOpenedProject(openedProject.path);
     } catch (error: unknown) {
       setProjectError(toAppCommandError(error).message);
     } finally {
       setIsOpeningProject(false);
     }
+  }
+
+  async function scanOpenedProject(path: string) {
+    if (isScanning()) return;
+
+    setIsScanning(true);
+    setScanStatus("scanning");
+    setScanMessage(null);
+    try {
+      const result = await scanProject({ path });
+      setScanResult(result);
+      setSelectedEntry(null);
+      setScanStatus("complete");
+    } catch (error: unknown) {
+      const commandError = toAppCommandError(error);
+      setScanStatus(commandError.code === "cancelled" ? "cancelled" : "error");
+      setScanMessage(commandError.message);
+    } finally {
+      setIsScanning(false);
+    }
+  }
+
+  function handleRescanProject() {
+    const currentProject = project();
+    if (currentProject) void scanOpenedProject(currentProject.path);
   }
 
   const getCoreStatusMessage = () => {
@@ -113,10 +149,17 @@ function App() {
       coreStatusMessage={getCoreStatusMessage()}
       taskState={taskState()}
       project={project()}
+      scanResult={scanResult()}
+      selectedEntry={selectedEntry()}
+      onSelectEntry={setSelectedEntry}
+      scanStatus={scanStatus()}
+      scanMessage={scanMessage()}
+      isScanning={isScanning()}
       isOpeningProject={isOpeningProject()}
       projectError={projectError()}
       onCancelTask={() => void requestCancellation()}
       onOpenProject={() => void handleOpenProject()}
+      onRescanProject={handleRescanProject}
     />
   );
 }
