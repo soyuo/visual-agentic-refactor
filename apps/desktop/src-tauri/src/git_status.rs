@@ -1,9 +1,12 @@
 use serde::Serialize;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
+use std::process::Stdio;
 use std::process::{Command, Output};
 
 const MAX_DISPLAYED_CHANGES: usize = 100;
+const MAX_GIT_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,8 +113,11 @@ pub fn inspect_project(path: &Path) -> GitStatusResponse {
     };
     let head = head.filter(|head| !head.is_empty());
 
-    let tracked_output = match run_git(Some(&root), &["ls-files", "--cached", "-z"]) {
+    let tracked_output = match run_git_bounded(Some(&root), &["ls-files", "--cached", "-z"]) {
         Ok(output) if output.status.success() => output.stdout,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return error_status("Git 추적 파일 목록이 안전한 출력 한도를 초과했습니다.");
+        }
         _ => return error_status("추적 파일 목록을 읽지 못했습니다."),
     };
     let tracked_count = tracked_output
@@ -119,11 +125,14 @@ pub fn inspect_project(path: &Path) -> GitStatusResponse {
         .filter(|path| !path.is_empty())
         .count() as u64;
 
-    let status_output = match run_git(
+    let status_output = match run_git_bounded(
         Some(&root),
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     ) {
         Ok(output) if output.status.success() => output.stdout,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return error_status("Git 변경 목록이 안전한 출력 한도를 초과했습니다.");
+        }
         _ => return error_status("Git 파일 변경 상태를 읽지 못했습니다."),
     };
     let (modified_count, untracked_count, changes, omitted_change_count) =
@@ -142,7 +151,7 @@ pub fn inspect_project(path: &Path) -> GitStatusResponse {
     }
 }
 
-fn run_git(root: Option<&Path>, args: &[&str]) -> std::io::Result<Output> {
+fn git_command(root: Option<&Path>, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     command
         .arg("--no-optional-locks")
@@ -159,7 +168,53 @@ fn run_git(root: Option<&Path>, args: &[&str]) -> std::io::Result<Output> {
     if let Some(root) = root {
         command.arg("-C").arg(root);
     }
-    command.args(args).output()
+    command.args(args);
+    command
+}
+
+fn run_git(root: Option<&Path>, args: &[&str]) -> std::io::Result<Output> {
+    git_command(root, args).output()
+}
+
+fn run_git_bounded(root: Option<&Path>, args: &[&str]) -> std::io::Result<Output> {
+    let mut child = git_command(root, args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = match read_bounded_output(
+        child
+            .stdout
+            .take()
+            .expect("piped Git stdout should be available"),
+        MAX_GIT_OUTPUT_BYTES,
+    ) {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let status = child.wait()?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
+fn read_bounded_output(reader: impl Read, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    reader
+        .take((max_bytes + 1) as u64)
+        .read_to_end(&mut output)?;
+    if output.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Git output exceeded the configured limit",
+        ));
+    }
+    Ok(output)
 }
 
 fn parse_porcelain_status(output: &[u8]) -> (u64, u64, Vec<GitFileChange>, u64) {
@@ -257,7 +312,7 @@ fn empty_status(state: GitStatusState, message: &str) -> GitStatusResponse {
 mod tests {
     use super::{
         GitFileChangeKind, GitStatusState, MAX_DISPLAYED_CHANGES, inspect_project,
-        parse_porcelain_status,
+        parse_porcelain_status, read_bounded_output,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -356,6 +411,14 @@ mod tests {
         assert_eq!(untracked, (MAX_DISPLAYED_CHANGES + 7) as u64);
         assert_eq!(changes.len(), MAX_DISPLAYED_CHANGES);
         assert_eq!(omitted, 7);
+    }
+
+    #[test]
+    fn rejects_git_output_above_the_configured_byte_limit() {
+        let error = read_bounded_output(std::io::repeat(0), 8)
+            .expect_err("output beyond the configured limit should fail");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]
