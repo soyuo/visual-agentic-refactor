@@ -76,16 +76,40 @@ pub fn inspect_project(path: &Path) -> GitStatusResponse {
         return not_repository_status();
     }
 
-    let branch = run_git(Some(&root), &["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|branch| !branch.is_empty());
-    let head = run_git(Some(&root), &["rev-parse", "--verify", "HEAD"])
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|head| !head.is_empty());
+    let branch_output = match run_git(Some(&root), &["symbolic-ref", "--quiet", "--short", "HEAD"])
+    {
+        Ok(output) => output,
+        Err(_) => return error_status("현재 브랜치 정보를 읽지 못했습니다."),
+    };
+    let branch = if branch_output.status.success() {
+        Some(
+            String::from_utf8_lossy(&branch_output.stdout)
+                .trim()
+                .to_owned(),
+        )
+    } else if branch_output.status.code() == Some(1) && branch_output.stderr.is_empty() {
+        None
+    } else {
+        return error_status("현재 브랜치 정보를 읽지 못했습니다.");
+    };
+    let branch = branch.filter(|branch| !branch.is_empty());
+
+    let head_output = match run_git(Some(&root), &["rev-parse", "--verify", "--quiet", "HEAD"]) {
+        Ok(output) => output,
+        Err(_) => return error_status("HEAD 커밋 정보를 읽지 못했습니다."),
+    };
+    let head = if head_output.status.success() {
+        Some(
+            String::from_utf8_lossy(&head_output.stdout)
+                .trim()
+                .to_owned(),
+        )
+    } else if head_output.status.code() == Some(1) && head_output.stderr.is_empty() {
+        None
+    } else {
+        return error_status("HEAD 커밋 정보를 읽지 못했습니다.");
+    };
+    let head = head.filter(|head| !head.is_empty());
 
     let tracked_output = match run_git(Some(&root), &["ls-files", "--cached", "-z"]) {
         Ok(output) if output.status.success() => output.stdout,
@@ -227,7 +251,66 @@ fn empty_status(state: GitStatusState, message: &str) -> GitStatusResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitFileChangeKind, MAX_DISPLAYED_CHANGES, parse_porcelain_status};
+    use super::{
+        GitFileChangeKind, GitStatusState, MAX_DISPLAYED_CHANGES, inspect_project,
+        parse_porcelain_status,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Output};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDirectory(PathBuf);
+
+    impl TempDirectory {
+        fn new() -> Self {
+            let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "visual-agentic-refactor-git-status-{}-{id}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("temporary directory should be created");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn run_git(root: &Path, args: &[&str]) -> Output {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", root.join("empty-git-config"))
+            .output()
+            .expect("Git is available for integration tests");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    fn git_is_available() -> bool {
+        Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
 
     #[test]
     fn parses_changed_and_untracked_paths_from_nul_delimited_status() {
@@ -269,5 +352,132 @@ mod tests {
         assert_eq!(untracked, (MAX_DISPLAYED_CHANGES + 7) as u64);
         assert_eq!(changes.len(), MAX_DISPLAYED_CHANGES);
         assert_eq!(omitted, 7);
+    }
+
+    #[test]
+    fn inspects_repository_state_without_changing_project_files_or_index() {
+        if !git_is_available() {
+            return;
+        }
+
+        let temp = TempDirectory::new();
+        let root = temp.path();
+        let hooks = root.join("empty-hooks");
+        fs::create_dir(&hooks).expect("hook directory should be created");
+        fs::write(root.join("tracked.txt"), b"initial\n").expect("sample file should be written");
+        run_git(root, &["init", "--quiet", "--template="]);
+        run_git(
+            root,
+            &[
+                "-c",
+                "core.hooksPath=empty-hooks",
+                "config",
+                "user.name",
+                "Test User",
+            ],
+        );
+        run_git(
+            root,
+            &[
+                "-c",
+                "core.hooksPath=empty-hooks",
+                "config",
+                "user.email",
+                "test@example.invalid",
+            ],
+        );
+        run_git(
+            root,
+            &["-c", "core.hooksPath=empty-hooks", "add", "tracked.txt"],
+        );
+        run_git(
+            root,
+            &[
+                "-c",
+                "core.hooksPath=empty-hooks",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+        );
+        fs::write(root.join("tracked.txt"), b"changed\n").expect("tracked file should change");
+        fs::write(root.join("new.txt"), b"untracked\n").expect("untracked file should be written");
+        let original_tracked_contents = fs::read(root.join("tracked.txt")).unwrap();
+        let original_untracked_contents = fs::read(root.join("new.txt")).unwrap();
+        let index_path = root.join(".git").join("index");
+        let original_index = fs::read(&index_path).expect("Git index should exist after commit");
+
+        let status = inspect_project(root);
+
+        assert_eq!(status.state, GitStatusState::Available);
+        assert!(
+            status
+                .branch
+                .as_ref()
+                .is_some_and(|branch| !branch.is_empty())
+        );
+        assert!(status.head.as_ref().is_some_and(|head| !head.is_empty()));
+        assert_eq!(status.tracked_count, 1);
+        assert_eq!(status.modified_count, 1);
+        assert_eq!(status.untracked_count, 1);
+        assert!(
+            status
+                .changes
+                .iter()
+                .any(|change| change.path == "tracked.txt")
+        );
+        assert!(status.changes.iter().any(|change| change.path == "new.txt"));
+        assert_eq!(
+            fs::read(root.join("tracked.txt")).unwrap(),
+            original_tracked_contents
+        );
+        assert_eq!(
+            fs::read(root.join("new.txt")).unwrap(),
+            original_untracked_contents
+        );
+        assert_eq!(fs::read(&index_path).unwrap(), original_index);
+    }
+
+    #[test]
+    fn reports_non_repository_without_blocking_folder_access() {
+        if !git_is_available() {
+            return;
+        }
+
+        let temp = TempDirectory::new();
+        fs::write(temp.path().join("sample.txt"), b"readable\n").unwrap();
+
+        let status = inspect_project(temp.path());
+
+        assert_eq!(status.state, GitStatusState::NotRepository);
+        assert_eq!(
+            fs::read(temp.path().join("sample.txt")).unwrap(),
+            b"readable\n"
+        );
+    }
+
+    #[test]
+    fn reports_branch_without_head_for_an_initialized_empty_repository() {
+        if !git_is_available() {
+            return;
+        }
+
+        let temp = TempDirectory::new();
+        run_git(temp.path(), &["init", "--quiet", "--template="]);
+
+        let status = inspect_project(temp.path());
+
+        assert_eq!(status.state, GitStatusState::Available);
+        assert!(
+            status
+                .branch
+                .as_ref()
+                .is_some_and(|branch| !branch.is_empty())
+        );
+        assert_eq!(status.head, None);
+        assert_eq!(status.tracked_count, 0);
+        assert_eq!(status.modified_count, 0);
+        assert_eq!(status.untracked_count, 0);
     }
 }
