@@ -122,6 +122,7 @@ function App() {
     try {
       const result = await scanProject({ path });
       setScanResult(result);
+      setSelectedEntry(null);
       setScanStatus("complete");
     } catch (error: unknown) {
       const commandError = toAppCommandError(error);

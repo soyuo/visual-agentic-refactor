@@ -416,6 +416,99 @@ button:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.scan-summary-line {
+  margin: 0 0 10px;
+  color: #7e899b;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.scan-limit-notice {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border: 1px solid #f1dfb6;
+  border-radius: 7px;
+  background: #fffaf0;
+  color: #876b2b;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.scan-empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 32px 16px;
+  border: 1px dashed #dfe4ed;
+  border-radius: 8px;
+  background: #fbfcfe;
+  text-align: center;
+}
+
+.scan-empty-state > span {
+  color: #8594b8;
+  font-size: 23px;
+  line-height: 1;
+}
+
+.scan-empty-state strong {
+  color: #566278;
+  font-size: 11px;
+}
+
+.scan-empty-state p {
+  max-width: 300px;
+  margin: 0;
+  color: #929bab;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.scan-warnings {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid #f0e2c5;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #766543;
+  font-size: 10px;
+}
+
+.scan-warnings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.scan-warnings ul {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+  margin: 10px 0 0;
+  padding: 0 0 0 16px;
+}
+
+.scan-warnings li {
+  padding-left: 2px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.scan-warnings code {
+  display: block;
+  margin-bottom: 2px;
+  color: #806833;
+  font-size: 9px;
+}
+
+.scan-warning-overflow {
+  margin: 8px 0 0;
+  color: #988762;
+  font-size: 9px;
+}
+
 .file-tree {
   max-height: 520px;
   overflow: auto;

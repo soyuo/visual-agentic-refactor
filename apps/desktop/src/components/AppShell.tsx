@@ -208,11 +208,60 @@ function AppShell(props: AppShellProps) {
                   <h3 id="file-tree-title">파일 트리</h3>
                   <span>{props.scanResult.summary.entries.toLocaleString()}개 항목</span>
                 </div>
-                <FileTree
-                  entries={props.scanResult.entries}
-                  selectedPath={props.selectedEntry?.relativePath ?? null}
-                  onSelect={props.onSelectEntry}
-                />
+                <p class="scan-summary-line">
+                  파일 {props.scanResult.summary.files.toLocaleString()}개 · 디렉터리{" "}
+                  {props.scanResult.summary.directories.toLocaleString()}개 · 분석 가능{" "}
+                  {props.scanResult.summary.eligibleFiles.toLocaleString()}개 · 제외{" "}
+                  {props.scanResult.summary.skippedFiles.toLocaleString()}개
+                </p>
+                {(props.scanResult.summary.depthLimitReached ||
+                  props.scanResult.summary.entryLimitReached) && (
+                  <div class="scan-limit-notice" role="status">
+                    {props.scanResult.summary.depthLimitReached && (
+                      <span>최대 탐색 깊이 {props.scanResult.summary.depthLimit}에 도달했습니다.</span>
+                    )}
+                    {props.scanResult.summary.entryLimitReached && (
+                      <span>항목 수 제한에 도달해 나머지는 생략했습니다.</span>
+                    )}
+                  </div>
+                )}
+                {props.scanResult.entries.length > 0 ? (
+                  <FileTree
+                    entries={props.scanResult.entries}
+                    selectedPath={props.selectedEntry?.relativePath ?? null}
+                    onSelect={props.onSelectEntry}
+                  />
+                ) : (
+                  <div class="scan-empty-state" role="status">
+                    <span aria-hidden="true">⌕</span>
+                    <strong>표시할 파일이 없습니다</strong>
+                    <p>
+                      비어 있거나 기본 제외 규칙에 해당하는 항목만 있는 프로젝트일 수 있습니다.
+                    </p>
+                  </div>
+                )}
+                {props.scanResult.warnings.length > 0 && (
+                  <details class="scan-warnings">
+                    <summary>
+                      경고 {props.scanResult.warnings.length.toLocaleString()}개
+                    </summary>
+                    <ul>
+                      {props.scanResult.warnings.slice(0, 20).map((warning) => (
+                        <li>
+                          {warning.relativePath && (
+                            <code title={warning.relativePath}>{warning.relativePath}</code>
+                          )}
+                          <span>{warning.message}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {props.scanResult.warnings.length > 20 && (
+                      <p class="scan-warning-overflow">
+                        나머지 {props.scanResult.warnings.length - 20}개 경고는 목록에서 생략했습니다.
+                      </p>
+                    )}
+                  </details>
+                )}
               </section>
             )}
           </section>
