@@ -83,6 +83,7 @@ pub struct ScanProjectResponse {
     pub entries: Vec<ScanEntry>,
     pub warnings: Vec<ScanWarning>,
     pub summary: ScanSummary,
+    pub project_detection: crate::project_detection::ProjectDetection,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -395,12 +396,14 @@ fn scan_project_with_entry_limit(
     progress.check_cancelled()?;
     summary.entries = entries.len() as u64;
     summary.skipped_files = summary.files.saturating_sub(summary.eligible_files);
+    let project_detection = crate::project_detection::detect_project(&root, &entries);
 
     Ok(ScanProjectResponse {
         root_path: root.to_string_lossy().into_owned(),
         entries,
         warnings,
         summary,
+        project_detection,
     })
 }
 
@@ -722,6 +725,70 @@ mod tests {
             fs::read(project.0.join("src/Main.kt")).unwrap(),
             b"package sample\n"
         );
+    }
+
+    #[test]
+    fn includes_static_project_detection_and_marks_config_only_as_uncertain() {
+        let project = TempProject::new();
+        project.write("src/Main.kt", b"package sample\n");
+        project.write("src/Main.java", b"package sample;\n");
+        project.write(
+            "build.gradle.kts",
+            b"plugins { id(\"org.springframework.boot\") version \"3.3.0\" }\n",
+        );
+        project.write("settings.gradle", b"rootProject.name = 'sample'\n");
+        project.write(
+            "src/main/resources/application.yml",
+            b"spring:\n  application:\n    name: sample\n",
+        );
+        let kotlin_before = fs::read(project.0.join("src/Main.kt")).unwrap();
+        let gradle_before = fs::read(project.0.join("build.gradle.kts")).unwrap();
+
+        let response = scan(&project.0, ScanOptions::default()).expect("scan project");
+        assert!(matches!(
+            response.project_detection.kotlin.status,
+            crate::project_detection::DetectionStatus::Detected
+        ));
+        assert!(matches!(
+            response.project_detection.java.status,
+            crate::project_detection::DetectionStatus::Detected
+        ));
+        assert!(matches!(
+            response.project_detection.gradle.status,
+            crate::project_detection::DetectionStatus::Detected
+        ));
+        assert!(matches!(
+            response.project_detection.spring_boot.status,
+            crate::project_detection::DetectionStatus::Detected
+        ));
+        assert!(
+            response
+                .project_detection
+                .spring_boot
+                .evidence
+                .iter()
+                .any(|evidence| evidence.relative_path == "build.gradle.kts")
+        );
+        assert_eq!(
+            fs::read(project.0.join("src/Main.kt")).unwrap(),
+            kotlin_before
+        );
+        assert_eq!(
+            fs::read(project.0.join("build.gradle.kts")).unwrap(),
+            gradle_before
+        );
+
+        let config_only_project = TempProject::new();
+        config_only_project.write(
+            "application.properties",
+            b"spring.application.name=sample\n",
+        );
+        let config_only = scan(&config_only_project.0, ScanOptions::default())
+            .expect("scan project with application config only");
+        assert!(matches!(
+            config_only.project_detection.spring_boot.status,
+            crate::project_detection::DetectionStatus::Uncertain
+        ));
     }
 
     #[test]
