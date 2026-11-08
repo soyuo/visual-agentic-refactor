@@ -1,6 +1,7 @@
 import type {
   OpenProjectResponse,
   ScanEntry,
+  ScanFileStatus,
   ScanProjectResponse,
   TaskProgressEvent,
 } from "../lib/commands";
@@ -57,6 +58,27 @@ function getTaskStatusLabel(task: TaskUiState): string {
   if (task.event.status === "failed") return "오류";
   if (task.cancellationRequested) return "취소 요청 중";
   return "진행 중";
+}
+
+function formatFileSize(bytes: number | null): string {
+  if (bytes == null) return "정보 없음";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatModifiedDate(timestamp: number | null): string {
+  if (timestamp == null) return "정보 없음";
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? "정보 없음" : date.toLocaleString();
+}
+
+function getFileStatusLabel(status: ScanFileStatus | null): string {
+  if (status === "eligible") return "분석 대상 가능";
+  if (status === "unsupportedType") return "지원하지 않는 형식";
+  if (status === "tooLarge") return "크기 제한 초과";
+  if (status === "binary") return "바이너리 파일";
+  return "해당 없음";
 }
 
 function AppShell(props: AppShellProps) {
@@ -236,6 +258,62 @@ function AppShell(props: AppShellProps) {
           </div>
           <span class="details-menu-mark" aria-hidden="true">···</span>
         </div>
+
+        <section class="detail-card" aria-labelledby="selected-entry-title">
+          <div class="detail-card-heading">
+            <h3 id="selected-entry-title">선택 항목</h3>
+            <span class="muted-count">
+              {props.selectedEntry
+                ? props.selectedEntry.kind === "directory"
+                  ? "디렉터리"
+                  : "파일"
+                : "—"}
+            </span>
+          </div>
+          {props.selectedEntry ? (
+            <dl class="entry-details">
+              <div>
+                <dt>이름</dt>
+                <dd title={props.selectedEntry.name}>{props.selectedEntry.name}</dd>
+              </div>
+              <div>
+                <dt>상대 경로</dt>
+                <dd title={props.selectedEntry.relativePath}>
+                  {props.selectedEntry.relativePath}
+                </dd>
+              </div>
+              <div>
+                <dt>종류</dt>
+                <dd>{props.selectedEntry.kind === "directory" ? "디렉터리" : "파일"}</dd>
+              </div>
+              <div>
+                <dt>크기</dt>
+                <dd>{formatFileSize(props.selectedEntry.sizeBytes)}</dd>
+              </div>
+              <div>
+                <dt>수정 시각</dt>
+                <dd>{formatModifiedDate(props.selectedEntry.modifiedUnixMs)}</dd>
+              </div>
+              {props.selectedEntry.kind === "file" && (
+                <>
+                  <div>
+                    <dt>확장자</dt>
+                    <dd>{props.selectedEntry.extension ?? "없음"}</dd>
+                  </div>
+                  <div>
+                    <dt>스캔 분류</dt>
+                    <dd>{getFileStatusLabel(props.selectedEntry.fileStatus)}</dd>
+                  </div>
+                </>
+              )}
+            </dl>
+          ) : (
+            <div class="no-selection">
+              <span class="selection-mark" aria-hidden="true">—</span>
+              <p>트리에서 파일이나 디렉터리를 선택하세요.</p>
+            </div>
+          )}
+        </section>
 
         <section class="detail-card">
           <div class="detail-card-heading">
