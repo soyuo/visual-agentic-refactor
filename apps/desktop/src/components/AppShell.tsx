@@ -1,4 +1,6 @@
 import type {
+  DetectionResult,
+  DetectionStatus,
   OpenProjectResponse,
   ScanEntry,
   ScanFileStatus,
@@ -81,7 +83,25 @@ function getFileStatusLabel(status: ScanFileStatus | null): string {
   return "해당 없음";
 }
 
+function getDetectionStatusLabel(status: DetectionStatus): string {
+  if (status === "detected") return "감지됨";
+  if (status === "uncertain") return "판단 유보";
+  return "감지되지 않음";
+}
+
 function AppShell(props: AppShellProps) {
+  const detectionRows = () => {
+    const detection = props.scanResult?.projectDetection;
+    if (!detection) return [];
+
+    return [
+      { label: "Kotlin", result: detection.kotlin },
+      { label: "Java", result: detection.java },
+      { label: "Spring Boot", result: detection.springBoot },
+      { label: "Gradle", result: detection.gradle },
+    ] satisfies Array<{ label: string; result: DetectionResult }>;
+  };
+
   const taskProgress = () => {
     const task = props.taskState;
     if (!task || task.event.total == null) return null;
@@ -204,6 +224,37 @@ function AppShell(props: AppShellProps) {
             </div>
             {props.scanResult && (
               <section class="file-explorer" aria-labelledby="file-tree-title">
+                <section class="project-detection" aria-labelledby="project-detection-title">
+                  <h3 id="project-detection-title">기술 스택 감지</h3>
+                  <ul class="project-detection-list">
+                    {detectionRows().map(({ label, result }) => (
+                      <li class="project-detection-item">
+                        <div class="project-detection-heading">
+                          <strong>{label}</strong>
+                          <span class={`detection-status ${result.status}`}>
+                            {getDetectionStatusLabel(result.status)}
+                          </span>
+                        </div>
+                        <p>{result.message}</p>
+                        {result.evidence.length > 0 && (
+                          <ul class="detection-evidence-list">
+                            {result.evidence.map((evidence) => (
+                              <li>
+                                <code title={evidence.relativePath}>{evidence.relativePath}</code>
+                                <span>{evidence.description}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {result.evidenceOmittedCount > 0 && (
+                          <span class="detection-evidence-overflow">
+                            추가 근거 {result.evidenceOmittedCount.toLocaleString()}개를 생략했습니다.
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
                 <div class="file-explorer-heading">
                   <h3 id="file-tree-title">파일 트리</h3>
                   <span>{props.scanResult.summary.entries.toLocaleString()}개 항목</span>
