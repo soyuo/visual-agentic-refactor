@@ -2,6 +2,7 @@ pub mod command_error;
 pub mod commands;
 pub mod events;
 pub mod git_status;
+pub mod persistence;
 pub mod project_detection;
 pub mod scanner;
 pub mod state;
@@ -10,6 +11,13 @@ pub mod state;
 pub fn run() {
     tauri::Builder::default()
         .manage(state::AppState::default())
+        .setup(|app| {
+            use tauri::Manager;
+
+            let data_dir = app.path().app_data_dir().map_err(|error| error.to_string());
+            app.manage(persistence::PersistenceState::initialize(data_dir));
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
