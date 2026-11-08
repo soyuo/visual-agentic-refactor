@@ -65,11 +65,10 @@ pub fn inspect_project(path: &Path) -> GitStatusResponse {
         Err(_) => return error_status("Git 저장소 여부를 확인하지 못했습니다."),
     };
     if !repository_check.status.success() {
-        let message = String::from_utf8_lossy(&repository_check.stderr).to_ascii_lowercase();
-        return if message.contains("not a git repository") {
-            not_repository_status()
-        } else {
+        return if has_git_marker_in_ancestors(&root) {
             error_status("Git 저장소 여부를 확인하지 못했습니다.")
+        } else {
+            not_repository_status()
         };
     }
     if String::from_utf8_lossy(&repository_check.stdout).trim() != "true" {
@@ -229,6 +228,11 @@ fn not_repository_status() -> GitStatusResponse {
         GitStatusState::NotRepository,
         "선택한 프로젝트는 Git 작업 트리가 아닙니다. 파일 탐색은 계속 사용할 수 있습니다.",
     )
+}
+
+fn has_git_marker_in_ancestors(root: &Path) -> bool {
+    root.ancestors()
+        .any(|ancestor| fs::symlink_metadata(ancestor.join(".git")).is_ok())
 }
 
 fn error_status(message: &str) -> GitStatusResponse {
@@ -455,6 +459,20 @@ mod tests {
             fs::read(temp.path().join("sample.txt")).unwrap(),
             b"readable\n"
         );
+    }
+
+    #[test]
+    fn reports_corrupt_git_marker_as_error_instead_of_non_repository() {
+        if !git_is_available() {
+            return;
+        }
+
+        let temp = TempDirectory::new();
+        fs::create_dir(temp.path().join(".git")).expect("Git marker should be created");
+
+        let status = inspect_project(temp.path());
+
+        assert_eq!(status.state, GitStatusState::Error);
     }
 
     #[test]
