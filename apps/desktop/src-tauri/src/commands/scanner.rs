@@ -1,7 +1,7 @@
 use crate::command_error::CommandError;
 use crate::persistence::{PersistenceState, ProjectDatabase, StoredFile};
 use crate::scanner::{
-    ScanEntry, ScanEntryKind, ScanFileStatus, ScanProjectRequest, ScanProjectResponse,
+    ScanEntry, ScanEntryKind, ScanFileStatus, ScanProjectRequest, ScanProjectResponse, ScanSummary,
 };
 use crate::state::AppState;
 use tauri::{AppHandle, State};
@@ -30,9 +30,19 @@ pub async fn scan_project(
     })??;
 
     response.persistence_error = database
-        .and_then(|database| persist_scan(&database, &response))
+        .and_then(|database| {
+            if should_persist_scan(&response.summary) {
+                persist_scan(&database, &response)
+            } else {
+                Ok(())
+            }
+        })
         .err();
     Ok(response)
+}
+
+fn should_persist_scan(summary: &ScanSummary) -> bool {
+    !summary.depth_limit_reached && !summary.entry_limit_reached
 }
 
 fn persist_scan(database: &ProjectDatabase, response: &ScanProjectResponse) -> Result<(), String> {
@@ -62,5 +72,29 @@ fn stored_file(entry: &ScanEntry) -> StoredFile<'_> {
         modified_unix_ms: entry.modified_unix_ms,
         extension: entry.extension.as_deref(),
         file_status,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_persist_scan;
+    use crate::scanner::ScanSummary;
+
+    #[test]
+    fn incomplete_scans_do_not_replace_the_persisted_index() {
+        let complete = ScanSummary::default();
+        assert!(should_persist_scan(&complete));
+
+        let entry_limited = ScanSummary {
+            entry_limit_reached: true,
+            ..ScanSummary::default()
+        };
+        assert!(!should_persist_scan(&entry_limited));
+
+        let depth_limited = ScanSummary {
+            depth_limit_reached: true,
+            ..ScanSummary::default()
+        };
+        assert!(!should_persist_scan(&depth_limited));
     }
 }
