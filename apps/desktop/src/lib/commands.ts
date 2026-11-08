@@ -75,11 +75,33 @@ export interface ScanSummary {
   entryLimitReached: boolean;
 }
 
+export type DetectionStatus = "detected" | "notDetected" | "uncertain";
+
+export interface DetectionEvidence {
+  relativePath: string;
+  description: string;
+}
+
+export interface DetectionResult {
+  status: DetectionStatus;
+  message: string;
+  evidence: DetectionEvidence[];
+  evidenceOmittedCount: number;
+}
+
+export interface ProjectDetection {
+  kotlin: DetectionResult;
+  java: DetectionResult;
+  springBoot: DetectionResult;
+  gradle: DetectionResult;
+}
+
 export interface ScanProjectResponse {
   rootPath: string;
   entries: ScanEntry[];
   warnings: ScanWarning[];
   summary: ScanSummary;
+  projectDetection: ProjectDetection;
 }
 
 export type TaskStatus = "running" | "completed" | "cancelled" | "failed";
