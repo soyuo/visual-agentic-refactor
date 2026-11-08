@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::command_error::{CommandError, CommandErrorCode};
+use crate::persistence::{PersistenceState, StoredProject};
+use tauri::State;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,10 +18,14 @@ pub struct OpenProjectRequest {
 pub struct OpenProjectResponse {
     pub path: String,
     pub name: String,
+    pub persistence_error: Option<String>,
 }
 
 #[tauri::command]
-pub fn open_project(request: OpenProjectRequest) -> Result<OpenProjectResponse, CommandError> {
+pub fn open_project(
+    request: OpenProjectRequest,
+    persistence: State<'_, PersistenceState>,
+) -> Result<OpenProjectResponse, CommandError> {
     if request.path.trim().is_empty() {
         return Err(invalid_project_path("프로젝트 경로가 비어 있습니다."));
     }
@@ -67,7 +73,34 @@ pub fn open_project(request: OpenProjectRequest) -> Result<OpenProjectResponse, 
         })?;
     }
 
-    Ok(project_response(&canonical_path))
+    let mut response = project_response(&canonical_path);
+    response.persistence_error = persistence
+        .database()
+        .map_err(|error| error.message)
+        .and_then(|database| {
+            database.save_project(&StoredProject {
+                path: response.path.clone(),
+                name: response.name.clone(),
+            })
+        })
+        .err();
+    Ok(response)
+}
+
+#[tauri::command]
+pub fn get_last_project(
+    persistence: State<'_, PersistenceState>,
+) -> Result<Option<OpenProjectResponse>, CommandError> {
+    let project = persistence
+        .database()?
+        .last_opened_project()
+        .map_err(|error| CommandError::new(CommandErrorCode::Internal, error))?;
+
+    Ok(project.map(|project| OpenProjectResponse {
+        path: project.path,
+        name: project.name,
+        persistence_error: None,
+    }))
 }
 
 fn project_response(path: &Path) -> OpenProjectResponse {
@@ -81,6 +114,7 @@ fn project_response(path: &Path) -> OpenProjectResponse {
     OpenProjectResponse {
         path: display_path,
         name,
+        persistence_error: None,
     }
 }
 

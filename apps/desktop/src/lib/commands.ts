@@ -26,6 +26,7 @@ export interface AppInfoResponse {
 export interface OpenProjectResponse {
   path: string;
   name: string;
+  persistenceError: string | null;
 }
 
 export interface ScanOptions {
@@ -102,6 +103,7 @@ export interface ScanProjectResponse {
   warnings: ScanWarning[];
   summary: ScanSummary;
   projectDetection: ProjectDetection;
+  persistenceError: string | null;
 }
 
 export type GitStatusState = "available" | "gitUnavailable" | "notRepository" | "error";
@@ -182,6 +184,14 @@ export async function openProject(path: string): Promise<OpenProjectResponse> {
     return await invoke<OpenProjectResponse>("open_project", {
       request: { path },
     });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function getLastProject(): Promise<OpenProjectResponse | null> {
+  try {
+    return await invoke<OpenProjectResponse | null>("get_last_project");
   } catch (error) {
     throw toAppCommandError(error);
   }

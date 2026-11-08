@@ -29,14 +29,14 @@ pub struct StoredProject {
 }
 
 #[derive(Debug, Clone)]
-pub struct StoredFile {
-    pub relative_path: String,
-    pub name: String,
-    pub kind: String,
+pub struct StoredFile<'a> {
+    pub relative_path: &'a str,
+    pub name: &'a str,
+    pub kind: &'a str,
     pub size_bytes: Option<u64>,
     pub modified_unix_ms: Option<u64>,
-    pub extension: Option<String>,
-    pub file_status: Option<String>,
+    pub extension: Option<&'a str>,
+    pub file_status: Option<&'a str>,
 }
 
 impl PersistenceState {
@@ -127,11 +127,14 @@ impl ProjectDatabase {
             .map_err(|error| format!("저장된 프로젝트를 불러오지 못했습니다: {error}"))
     }
 
-    pub fn replace_file_index(
+    pub fn replace_file_index<'a, Entries>(
         &self,
         root_path: &str,
-        entries: &[StoredFile],
-    ) -> Result<(), String> {
+        entries: Entries,
+    ) -> Result<(), String>
+    where
+        Entries: IntoIterator<Item = StoredFile<'a>>,
+    {
         let mut connection = self
             .connection
             .lock()
@@ -139,6 +142,13 @@ impl ProjectDatabase {
         let transaction = connection
             .transaction()
             .map_err(|error| format!("파일 인덱스 갱신을 시작하지 못했습니다: {error}"))?;
+        let now = current_time_unix_ms()?;
+        transaction
+            .execute(
+                "UPDATE projects SET last_opened_at_unix_ms = ?1 WHERE root_path = ?2",
+                (&now, root_path),
+            )
+            .map_err(|error| format!("프로젝트 접근 시각을 갱신하지 못했습니다: {error}"))?;
         let project_id: i64 = transaction
             .query_row(
                 "SELECT id FROM projects WHERE root_path = ?1",
@@ -252,6 +262,18 @@ mod tests {
 
     use super::{ProjectDatabase, StoredFile, StoredProject};
 
+    fn stored_file(relative_path: &str) -> StoredFile<'_> {
+        StoredFile {
+            relative_path,
+            name: relative_path,
+            kind: "file",
+            size_bytes: Some(12),
+            modified_unix_ms: Some(34),
+            extension: Some("kt"),
+            file_status: Some("eligible"),
+        }
+    }
+
     fn temporary_database_dir() -> std::path::PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -306,23 +328,14 @@ mod tests {
         };
         database.save_project(&project).unwrap();
 
-        let stored_file = |relative_path: &str| StoredFile {
-            relative_path: relative_path.into(),
-            name: relative_path.into(),
-            kind: "file".into(),
-            size_bytes: Some(12),
-            modified_unix_ms: Some(34),
-            extension: Some("kt".into()),
-            file_status: Some("eligible".into()),
-        };
         database
-            .replace_file_index(&project.path, &[stored_file("src/old.kt")])
+            .replace_file_index(&project.path, [stored_file("src/old.kt")])
             .unwrap();
         assert_eq!(database.file_paths(&project.path), ["src/old.kt"]);
 
         let result = database.replace_file_index(
             &project.path,
-            &[stored_file("src/new.kt"), stored_file("src/new.kt")],
+            [stored_file("src/new.kt"), stored_file("src/new.kt")],
         );
         assert!(result.is_err());
         assert_eq!(database.file_paths(&project.path), ["src/old.kt"]);

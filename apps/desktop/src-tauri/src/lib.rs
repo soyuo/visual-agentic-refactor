@@ -24,6 +24,7 @@ pub fn run() {
             commands::app::get_app_info,
             commands::git::get_git_status,
             commands::project::open_project,
+            commands::project::get_last_project,
             commands::scanner::scan_project,
             commands::tasks::cancel_task
         ])
