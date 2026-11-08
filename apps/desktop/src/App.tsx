@@ -6,6 +6,7 @@ import AppShell, {
 } from "./components/AppShell";
 import {
   cancelTask,
+  getLastProject,
   getGitStatus,
   getAppInfo,
   openProject,
@@ -73,11 +74,30 @@ function App() {
         setCoreStatus({ kind: "error", message: commandError.message });
       });
 
+    void restoreLastProject();
+
     onCleanup(() => {
       disposed = true;
       unlisten?.();
     });
   });
+
+  async function restoreLastProject() {
+    setIsOpeningProject(true);
+    try {
+      const savedProject = await getLastProject();
+      if (!savedProject) return;
+
+      const openedProject = await openProject(savedProject.path);
+      setProject(openedProject);
+      setProjectError(openedProject.persistenceError);
+      await scanOpenedProject(openedProject.path);
+    } catch (error: unknown) {
+      setProjectError(toAppCommandError(error).message);
+    } finally {
+      setIsOpeningProject(false);
+    }
+  }
 
   async function requestCancellation() {
     const activeTask = taskState();
@@ -108,9 +128,9 @@ function App() {
       const selectedPath = await selectProjectFolder();
       if (selectedPath === null) return;
 
-      setProjectError(null);
       const openedProject = await openProject(selectedPath);
       setProject(openedProject);
+      setProjectError(openedProject.persistenceError);
       setScanResult(null);
       setGitStatus(null);
       setGitStatusError(null);
@@ -135,6 +155,7 @@ function App() {
     try {
       const result = await scanProject({ path });
       setScanResult(result);
+      setProjectError(result.persistenceError);
       setSelectedEntry(null);
       setScanStatus("complete");
     } catch (error: unknown) {
