@@ -5,6 +5,8 @@ use std::path::Path;
 use crate::scanner::{ScanEntry, ScanEntryKind, ScanFileStatus};
 
 const MAX_GRADLE_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_GRADLE_CONFIG_FILES: usize = 16;
+const MAX_DETECTION_EVIDENCE: usize = 20;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +23,7 @@ pub struct DetectionResult {
     pub status: DetectionStatus,
     pub message: String,
     pub evidence: Vec<DetectionEvidence>,
+    pub evidence_omitted_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,21 +63,20 @@ fn detect_language(entries: &[ScanEntry], extension: &str, description: &str) ->
                 && entry.extension.as_deref() == Some(extension)
         })
         .collect::<Vec<_>>();
-    let evidence = candidates
-        .iter()
-        .map(|entry| DetectionEvidence {
+    let (evidence, evidence_omitted_count) =
+        limited_evidence(candidates.iter().map(|entry| DetectionEvidence {
             relative_path: entry.relative_path.clone(),
             description: description.into(),
-        })
-        .collect::<Vec<_>>();
+        }));
 
     if candidates.iter().any(|entry| is_eligible(entry)) {
-        detected(evidence)
+        detected(evidence, evidence_omitted_count)
     } else if candidates.is_empty() {
         not_detected("스캔된 파일에서 감지 근거를 찾지 못했습니다.")
     } else {
         uncertain(
             evidence,
+            evidence_omitted_count,
             "소스 확장자는 있지만 파일을 확인하지 못해 언어를 확정하지 않았습니다.",
         )
     }
@@ -87,21 +89,20 @@ fn detect_gradle(entries: &[ScanEntry]) -> DetectionResult {
             matches!(entry.kind, ScanEntryKind::File) && is_gradle_file(&entry.relative_path)
         })
         .collect::<Vec<_>>();
-    let evidence = candidates
-        .iter()
-        .map(|entry| DetectionEvidence {
+    let (evidence, evidence_omitted_count) =
+        limited_evidence(candidates.iter().map(|entry| DetectionEvidence {
             relative_path: entry.relative_path.clone(),
             description: "Gradle 빌드 스크립트 또는 래퍼 파일".into(),
-        })
-        .collect::<Vec<_>>();
+        }));
 
     if candidates.iter().any(|entry| is_eligible(entry)) {
-        detected(evidence)
+        detected(evidence, evidence_omitted_count)
     } else if candidates.is_empty() {
         not_detected("스캔된 파일에서 감지 근거를 찾지 못했습니다.")
     } else {
         uncertain(
             evidence,
+            evidence_omitted_count,
             "Gradle 파일은 있지만 내용을 확인할 수 없어 사용 여부를 확정하지 않았습니다.",
         )
     }
@@ -124,35 +125,75 @@ fn detect_spring_boot(root: &Path, entries: &[ScanEntry]) -> DetectionResult {
         .collect::<Vec<_>>();
 
     let mut evidence = Vec::new();
+    let mut evidence_omitted_count = 0;
     let mut has_boot_marker = false;
     let mut unreadable_build = false;
-    for entry in gradle_builds {
+    let mut inspection_limited = false;
+    for (index, entry) in gradle_builds.iter().enumerate() {
+        if index >= MAX_GRADLE_CONFIG_FILES {
+            inspection_limited = true;
+            for skipped in gradle_builds.iter().skip(index) {
+                push_evidence(
+                    &mut evidence,
+                    &mut evidence_omitted_count,
+                    DetectionEvidence {
+                        relative_path: skipped.relative_path.clone(),
+                        description: "Gradle 빌드 파일 (검사 한도로 내용 미확인)".into(),
+                    },
+                );
+            }
+            break;
+        }
         match read_gradle_config(root, entry) {
             Some(contents) if contains_spring_boot_marker(&contents) => {
                 has_boot_marker = true;
-                evidence.push(DetectionEvidence {
-                    relative_path: entry.relative_path.clone(),
-                    description: "Gradle 설정에서 Spring Boot 플러그인 또는 starter 선언".into(),
-                });
+                push_evidence(
+                    &mut evidence,
+                    &mut evidence_omitted_count,
+                    DetectionEvidence {
+                        relative_path: entry.relative_path.clone(),
+                        description: "Gradle 설정에서 Spring Boot 플러그인 또는 starter 선언"
+                            .into(),
+                    },
+                );
             }
             Some(_) => {}
-            None => unreadable_build = true,
+            None => {
+                unreadable_build = true;
+                push_evidence(
+                    &mut evidence,
+                    &mut evidence_omitted_count,
+                    DetectionEvidence {
+                        relative_path: entry.relative_path.clone(),
+                        description: "Gradle 빌드 파일 (내용을 확인하지 못함)".into(),
+                    },
+                );
+            }
         }
     }
 
     for entry in &app_configs {
-        evidence.push(DetectionEvidence {
-            relative_path: entry.relative_path.clone(),
-            description: "Spring에서 자주 쓰이는 application 설정 파일".into(),
-        });
+        push_evidence(
+            &mut evidence,
+            &mut evidence_omitted_count,
+            DetectionEvidence {
+                relative_path: entry.relative_path.clone(),
+                description: "Spring에서 자주 쓰이는 application 설정 파일".into(),
+            },
+        );
     }
 
     if has_boot_marker {
-        detected(evidence)
-    } else if !app_configs.is_empty() || unreadable_build {
+        detected(evidence, evidence_omitted_count)
+    } else if !app_configs.is_empty() || unreadable_build || inspection_limited {
         uncertain(
             evidence,
-            "설정 파일은 있지만 Spring Boot를 확정할 빌드 선언을 확인하지 못했습니다.",
+            evidence_omitted_count,
+            if inspection_limited {
+                "검사 한도 안에서 Spring Boot 선언을 찾지 못해 결과를 확정하지 않았습니다."
+            } else {
+                "설정 파일은 있지만 Spring Boot를 확정할 빌드 선언을 확인하지 못했습니다."
+            },
         )
     } else {
         not_detected("Spring Boot 감지 근거를 찾지 못했습니다.")
@@ -245,11 +286,12 @@ fn contains_spring_boot_marker(contents: &str) -> bool {
     })
 }
 
-fn detected(evidence: Vec<DetectionEvidence>) -> DetectionResult {
+fn detected(evidence: Vec<DetectionEvidence>, evidence_omitted_count: usize) -> DetectionResult {
     DetectionResult {
         status: DetectionStatus::Detected,
         message: "스캔된 파일에서 감지 근거를 찾았습니다.".into(),
         evidence,
+        evidence_omitted_count,
     }
 }
 
@@ -258,14 +300,43 @@ fn not_detected(message: &str) -> DetectionResult {
         status: DetectionStatus::NotDetected,
         message: message.into(),
         evidence: Vec::new(),
+        evidence_omitted_count: 0,
     }
 }
 
-fn uncertain(evidence: Vec<DetectionEvidence>, message: &str) -> DetectionResult {
+fn uncertain(
+    evidence: Vec<DetectionEvidence>,
+    evidence_omitted_count: usize,
+    message: &str,
+) -> DetectionResult {
     DetectionResult {
         status: DetectionStatus::Uncertain,
         message: message.into(),
         evidence,
+        evidence_omitted_count,
+    }
+}
+
+fn limited_evidence(
+    items: impl IntoIterator<Item = DetectionEvidence>,
+) -> (Vec<DetectionEvidence>, usize) {
+    let mut evidence = Vec::new();
+    let mut omitted_count = 0;
+    for item in items {
+        push_evidence(&mut evidence, &mut omitted_count, item);
+    }
+    (evidence, omitted_count)
+}
+
+fn push_evidence(
+    evidence: &mut Vec<DetectionEvidence>,
+    omitted_count: &mut usize,
+    item: DetectionEvidence,
+) {
+    if evidence.len() < MAX_DETECTION_EVIDENCE {
+        evidence.push(item);
+    } else {
+        *omitted_count += 1;
     }
 }
 
@@ -344,5 +415,16 @@ mod tests {
             "Kotlin 소스 파일 확장자",
         );
         assert!(matches!(unreadable.status, DetectionStatus::Uncertain));
+    }
+
+    #[test]
+    fn limits_evidence_collection_and_reports_omitted_count() {
+        let (evidence, omitted_count) = limited_evidence((0..25).map(|index| DetectionEvidence {
+            relative_path: format!("src/{index}.kt"),
+            description: "Kotlin source".into(),
+        }));
+
+        assert_eq!(evidence.len(), MAX_DETECTION_EVIDENCE);
+        assert_eq!(omitted_count, 5);
     }
 }

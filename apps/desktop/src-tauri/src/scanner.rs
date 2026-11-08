@@ -789,6 +789,28 @@ mod tests {
             config_only.project_detection.spring_boot.status,
             crate::project_detection::DetectionStatus::Uncertain
         ));
+
+        let many_builds_project = TempProject::new();
+        for module in 0..17 {
+            many_builds_project.write(
+                &format!("module{module}/build.gradle"),
+                b"plugins { id 'java' }\n",
+            );
+        }
+        let bounded = scan(&many_builds_project.0, ScanOptions::default())
+            .expect("scan project with many Gradle builds");
+        assert!(matches!(
+            bounded.project_detection.spring_boot.status,
+            crate::project_detection::DetectionStatus::Uncertain
+        ));
+        assert!(
+            bounded
+                .project_detection
+                .spring_boot
+                .evidence
+                .iter()
+                .any(|evidence| evidence.description.contains("검사 한도"))
+        );
     }
 
     #[test]
