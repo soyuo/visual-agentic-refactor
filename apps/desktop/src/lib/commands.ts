@@ -104,6 +104,27 @@ export interface ScanProjectResponse {
   projectDetection: ProjectDetection;
 }
 
+export type GitStatusState = "available" | "gitUnavailable" | "notRepository" | "error";
+export type GitFileChangeKind = "tracked" | "untracked";
+
+export interface GitFileChange {
+  path: string;
+  kind: GitFileChangeKind;
+  statusCode: string;
+}
+
+export interface GitStatusResponse {
+  state: GitStatusState;
+  branch: string | null;
+  head: string | null;
+  trackedCount: number;
+  modifiedCount: number;
+  untrackedCount: number;
+  changes: GitFileChange[];
+  omittedChangeCount: number;
+  message: string;
+}
+
 export type TaskStatus = "running" | "completed" | "cancelled" | "failed";
 
 export interface TaskProgressEvent {
@@ -171,6 +192,14 @@ export async function scanProject(
 ): Promise<ScanProjectResponse> {
   try {
     return await invoke<ScanProjectResponse>("scan_project", { request });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function getGitStatus(path: string): Promise<GitStatusResponse> {
+  try {
+    return await invoke<GitStatusResponse>("get_git_status", { path });
   } catch (error) {
     throw toAppCommandError(error);
   }

@@ -1,6 +1,7 @@
 import type {
   DetectionResult,
   DetectionStatus,
+  GitStatusResponse,
   OpenProjectResponse,
   ScanEntry,
   ScanFileStatus,
@@ -27,6 +28,9 @@ interface AppShellProps {
   taskState: TaskUiState | null;
   project: OpenProjectResponse | null;
   scanResult: ScanProjectResponse | null;
+  gitStatus: GitStatusResponse | null;
+  gitStatusError: string | null;
+  isGitStatusLoading: boolean;
   selectedEntry: ScanEntry | null;
   scanStatus: "idle" | "scanning" | "complete" | "cancelled" | "error";
   scanMessage: string | null;
@@ -36,6 +40,7 @@ interface AppShellProps {
   onCancelTask: () => void;
   onOpenProject: () => void;
   onRescanProject: () => void;
+  onRefreshGitStatus: () => void;
   onSelectEntry: (entry: ScanEntry) => void;
 }
 

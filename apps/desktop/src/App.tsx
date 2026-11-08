@@ -6,6 +6,7 @@ import AppShell, {
 } from "./components/AppShell";
 import {
   cancelTask,
+  getGitStatus,
   getAppInfo,
   openProject,
   scanProject,
@@ -13,19 +14,28 @@ import {
   toAppCommandError,
 } from "./lib/commands";
 import { selectProjectFolder } from "./lib/projectPicker";
-import type { OpenProjectResponse, ScanEntry, ScanProjectResponse } from "./lib/commands";
+import type {
+  GitStatusResponse,
+  OpenProjectResponse,
+  ScanEntry,
+  ScanProjectResponse,
+} from "./lib/commands";
 
 function App() {
   const [coreStatus, setCoreStatus] = createSignal<CoreStatus>({ kind: "loading" });
   const [taskState, setTaskState] = createSignal<TaskUiState | null>(null);
   const [project, setProject] = createSignal<OpenProjectResponse | null>(null);
   const [scanResult, setScanResult] = createSignal<ScanProjectResponse | null>(null);
+  const [gitStatus, setGitStatus] = createSignal<GitStatusResponse | null>(null);
+  const [gitStatusError, setGitStatusError] = createSignal<string | null>(null);
+  const [isGitStatusLoading, setIsGitStatusLoading] = createSignal(false);
   const [selectedEntry, setSelectedEntry] = createSignal<ScanEntry | null>(null);
   const [scanStatus, setScanStatus] = createSignal<"idle" | "scanning" | "complete" | "cancelled" | "error">("idle");
   const [scanMessage, setScanMessage] = createSignal<string | null>(null);
   const [isScanning, setIsScanning] = createSignal(false);
   const [isOpeningProject, setIsOpeningProject] = createSignal(false);
   const [projectError, setProjectError] = createSignal<string | null>(null);
+  let gitStatusRequestId = 0;
 
   onMount(() => {
     void getAppInfo()
@@ -102,6 +112,8 @@ function App() {
       const openedProject = await openProject(selectedPath);
       setProject(openedProject);
       setScanResult(null);
+      setGitStatus(null);
+      setGitStatusError(null);
       setSelectedEntry(null);
       setScanMessage(null);
       setIsOpeningProject(false);
@@ -116,6 +128,7 @@ function App() {
   async function scanOpenedProject(path: string) {
     if (isScanning()) return;
 
+    void refreshGitStatus(path);
     setIsScanning(true);
     setScanStatus("scanning");
     setScanMessage(null);
@@ -130,6 +143,23 @@ function App() {
       setScanMessage(commandError.message);
     } finally {
       setIsScanning(false);
+    }
+  }
+
+  async function refreshGitStatus(path: string) {
+    const requestId = ++gitStatusRequestId;
+    setIsGitStatusLoading(true);
+    setGitStatusError(null);
+
+    try {
+      const result = await getGitStatus(path);
+      if (requestId === gitStatusRequestId) setGitStatus(result);
+    } catch (error: unknown) {
+      if (requestId === gitStatusRequestId) {
+        setGitStatusError(toAppCommandError(error).message);
+      }
+    } finally {
+      if (requestId === gitStatusRequestId) setIsGitStatusLoading(false);
     }
   }
 
@@ -150,6 +180,9 @@ function App() {
       taskState={taskState()}
       project={project()}
       scanResult={scanResult()}
+      gitStatus={gitStatus()}
+      gitStatusError={gitStatusError()}
+      isGitStatusLoading={isGitStatusLoading()}
       selectedEntry={selectedEntry()}
       onSelectEntry={setSelectedEntry}
       scanStatus={scanStatus()}
@@ -160,6 +193,10 @@ function App() {
       onCancelTask={() => void requestCancellation()}
       onOpenProject={() => void handleOpenProject()}
       onRescanProject={handleRescanProject}
+      onRefreshGitStatus={() => {
+        const currentProject = project();
+        if (currentProject) void refreshGitStatus(currentProject.path);
+      }}
     />
   );
 }
