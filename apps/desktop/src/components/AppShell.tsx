@@ -1,4 +1,8 @@
-import type { OpenProjectResponse, TaskProgressEvent } from "../lib/commands";
+import type {
+  OpenProjectResponse,
+  ScanProjectResponse,
+  TaskProgressEvent,
+} from "../lib/commands";
 
 export type CoreStatus =
   | { kind: "loading" }
@@ -17,10 +21,15 @@ interface AppShellProps {
   coreStatusMessage: string;
   taskState: TaskUiState | null;
   project: OpenProjectResponse | null;
+  scanResult: ScanProjectResponse | null;
+  scanStatus: "idle" | "scanning" | "complete" | "cancelled" | "error";
+  scanMessage: string | null;
+  isScanning: boolean;
   isOpeningProject: boolean;
   projectError: string | null;
   onCancelTask: () => void;
   onOpenProject: () => void;
+  onRescanProject: () => void;
 }
 
 const navigationItems = [
@@ -116,11 +125,15 @@ function AppShell(props: AppShellProps) {
           <button
             class="primary-button"
             type="button"
-            disabled={props.isOpeningProject}
+            disabled={props.isOpeningProject || props.isScanning}
             onClick={props.onOpenProject}
           >
             <span aria-hidden="true">＋</span>
-            {props.isOpeningProject ? "폴더 선택 중..." : "프로젝트 열기"}
+            {props.isOpeningProject
+              ? "폴더 선택 중..."
+              : props.isScanning
+                ? "스캔 중..."
+                : "프로젝트 열기"}
           </button>
         </div>
 
@@ -137,9 +150,32 @@ function AppShell(props: AppShellProps) {
             <p class="project-open-path" title={props.project.path}>
               {props.project.path}
             </p>
-            <p class="project-open-note">
-              파일 구조와 기술 정보는 프로젝트 스캔 기능이 연결되면 표시됩니다.
-            </p>
+            <div class="project-scan-status" aria-live="polite">
+              {props.scanStatus === "scanning" && (
+                <p class="project-open-note">프로젝트 파일을 읽는 중입니다...</p>
+              )}
+              {props.scanStatus === "complete" && props.scanResult && (
+                <p class="project-open-note">
+                  {props.scanResult.summary.entries.toLocaleString()}개 항목을 찾았습니다.
+                </p>
+              )}
+              {(props.scanStatus === "error" || props.scanStatus === "cancelled") && (
+                <p class="inline-error" role="alert">
+                  {props.scanMessage ??
+                    (props.scanStatus === "cancelled" ? "스캔이 취소되었습니다." : "스캔에 실패했습니다.")}
+                </p>
+              )}
+              {props.scanStatus !== "scanning" && (
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={props.isScanning}
+                  onClick={props.onRescanProject}
+                >
+                  다시 스캔
+                </button>
+              )}
+            </div>
           </section>
         ) : (
           <section class="empty-project-card" aria-labelledby="empty-project-title">

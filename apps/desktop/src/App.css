@@ -389,6 +389,35 @@ button:focus-visible {
   line-height: 1.7;
 }
 
+.project-scan-status {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  margin-top: 13px;
+}
+
+.project-scan-status .project-open-note,
+.project-scan-status .inline-error {
+  margin: 0;
+}
+
+.secondary-button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dfe3eb;
+  border-radius: 7px;
+  background: #fff;
+  color: #59667b;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .empty-illustration {
   overflow: hidden;
   width: 100%;
