@@ -264,26 +264,101 @@ fn file_name(path: &str) -> &str {
 }
 
 fn contains_spring_boot_marker(contents: &str) -> bool {
+    let mut uncommented = String::with_capacity(contents.len());
+    let chars = contents.chars().collect::<Vec<_>>();
+    let mut index = 0;
     let mut in_block_comment = false;
-    contents.lines().any(|raw_line| {
-        let mut line = raw_line.trim();
+    let mut quote = None;
+    let mut triple_quote = false;
+
+    while index < chars.len() {
+        let current = chars[index];
+        let next = chars.get(index + 1).copied();
+
         if in_block_comment {
-            if let Some(end) = line.find("*/") {
-                line = line[end + 2..].trim_start();
+            if current == '*' && next == Some('/') {
                 in_block_comment = false;
+                index += 2;
             } else {
-                return false;
+                if current == '\n' {
+                    uncommented.push('\n');
+                }
+                index += 1;
             }
+            continue;
         }
 
-        if let Some(start) = line.find("/*") {
-            in_block_comment = !line[start + 2..].contains("*/");
-            line = line[..start].trim_end();
+        if let Some(delimiter) = quote {
+            if current == '\\' {
+                uncommented.push(current);
+                index += 1;
+                if index < chars.len() {
+                    uncommented.push(chars[index]);
+                    index += 1;
+                }
+                continue;
+            }
+            if triple_quote
+                && current == delimiter
+                && next == Some(delimiter)
+                && chars.get(index + 2) == Some(&delimiter)
+            {
+                uncommented.extend([delimiter, delimiter, delimiter]);
+                quote = None;
+                triple_quote = false;
+                index += 3;
+                continue;
+            }
+            uncommented.push(current);
+            if !triple_quote && current == delimiter {
+                quote = None;
+            }
+            index += 1;
+            continue;
         }
-        let line = line.split("//").next().unwrap_or_default().trim();
-        !line.starts_with('#')
-            && (line.contains("org.springframework.boot") || line.contains("spring-boot-starter"))
-    })
+
+        if current == '/' && next == Some('/') {
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if current == '/' && next == Some('*') {
+            in_block_comment = true;
+            index += 2;
+            continue;
+        }
+        if current == '#'
+            && uncommented
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if current == '"' || current == '\'' {
+            quote = Some(current);
+            triple_quote = next == Some(current) && chars.get(index + 2) == Some(&current);
+            uncommented.push(current);
+            index += 1;
+            if triple_quote {
+                uncommented.push(current);
+                uncommented.push(current);
+                index += 2;
+            }
+            continue;
+        }
+
+        uncommented.push(current);
+        index += 1;
+    }
+
+    uncommented.contains("org.springframework.boot") || uncommented.contains("spring-boot-starter")
 }
 
 fn detected(evidence: Vec<DetectionEvidence>, evidence_omitted_count: usize) -> DetectionResult {
@@ -402,6 +477,20 @@ mod tests {
         assert!(contains_spring_boot_marker(
             "implementation(\"org.springframework.boot:spring-boot-starter-web\")"
         ));
+    }
+
+    #[test]
+    fn scans_code_after_inline_block_comments_and_preserves_comment_like_strings() {
+        assert!(contains_spring_boot_marker(
+            "/* explanatory comment */ id(\"org.springframework.boot\")"
+        ));
+        assert!(contains_spring_boot_marker(
+            "// example /* not a block comment\nid(\"org.springframework.boot\")"
+        ));
+        assert!(contains_spring_boot_marker(
+            "repositories { maven(\"https://repo.example/spring-boot-starter\") }"
+        ));
+        assert!(!contains_spring_boot_marker("/* comment */\nid(\"java\")"));
     }
 
     #[test]
