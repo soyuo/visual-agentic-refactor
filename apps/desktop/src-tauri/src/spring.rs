@@ -24,6 +24,28 @@ pub struct SpringSourceFile<'a> {
     pub language: SourceLanguage,
 }
 
+#[derive(Clone)]
+struct SpringAnnotation {
+    name: String,
+    arguments: String,
+    evidence: SourceRange,
+}
+
+struct SpringSymbolFact<'a> {
+    key: String,
+    node_id: String,
+    parent_key: Option<String>,
+    name: String,
+    kind: SymbolKind,
+    path: &'a str,
+    source: &'a str,
+    language: SourceLanguage,
+    location: SourceRange,
+    annotations: Vec<SpringAnnotation>,
+    base_types: Vec<String>,
+    calls: Vec<(String, SourceRange)>,
+}
+
 /// Analyzes Kotlin and Java source facts relevant to Spring without loading a Spring runtime.
 pub fn analyze_spring_sources(
     snapshot_id: &str,
@@ -39,6 +61,7 @@ pub fn analyze_spring_sources(
     let mut source_hashes = BTreeMap::new();
     let mut completeness = GraphCompleteness::Complete;
     let mut seen_paths = HashSet::new();
+    let mut spring_symbols = Vec::new();
 
     for file in files.iter().take(MAX_SOURCE_FILES) {
         if !seen_paths.insert(file.relative_path) {
@@ -273,9 +296,12 @@ pub fn analyze_spring_sources(
                     } else {
                         Confidence::Inferred
                     };
-                    for dependency in
-                        parameter_types(file.source, &constructor.location, file.language)
-                    {
+                    for dependency in parameter_types(
+                        file.source,
+                        &constructor.location,
+                        file.language,
+                        &constructor.name,
+                    ) {
                         push_injection_edge(
                             &mut edges,
                             &mut emitted_dependencies,
@@ -305,7 +331,7 @@ pub fn analyze_spring_sources(
                 continue;
             };
             let dependencies = if matches!(symbol.kind, SymbolKind::Method | SymbolKind::Function) {
-                parameter_types(file.source, &symbol.location, file.language)
+                parameter_types(file.source, &symbol.location, file.language, &symbol.name)
             } else {
                 declared_type(file.source, symbol, file.language)
                     .into_iter()
@@ -322,6 +348,65 @@ pub fn analyze_spring_sources(
                     Confidence::Confirmed,
                 )?;
             }
+        }
+
+        let mut annotations_by_symbol: HashMap<String, Vec<SpringAnnotation>> = HashMap::new();
+        let mut bases_by_symbol: HashMap<String, Vec<String>> = HashMap::new();
+        let mut calls_by_symbol: HashMap<String, Vec<(String, SourceRange)>> = HashMap::new();
+        for relationship in &output.relationships {
+            match relationship.kind {
+                RelationshipKind::AnnotatedBy => {
+                    annotations_by_symbol
+                        .entry(relationship.source_symbol_id.0.clone())
+                        .or_default()
+                        .push(SpringAnnotation {
+                            name: relationship.target_name.clone().unwrap_or_default(),
+                            arguments: annotation_arguments(file.source, &relationship.location),
+                            evidence: relationship.location.clone(),
+                        });
+                }
+                RelationshipKind::Extends | RelationshipKind::Inherits => {
+                    if let Some(target_name) = relationship.target_name.as_ref() {
+                        bases_by_symbol
+                            .entry(relationship.source_symbol_id.0.clone())
+                            .or_default()
+                            .push(target_name.clone());
+                    }
+                }
+                RelationshipKind::Calls => {
+                    if let Some(target_name) = relationship.target_name.as_ref() {
+                        calls_by_symbol
+                            .entry(relationship.source_symbol_id.0.clone())
+                            .or_default()
+                            .push((target_name.clone(), relationship.location.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for symbol in &output.symbols {
+            let Some(node_id) = symbol_ids.get(&symbol.id.0) else {
+                continue;
+            };
+            spring_symbols.push(SpringSymbolFact {
+                key: format!("{}::{}", file.relative_path, symbol.id.0),
+                node_id: node_id.clone(),
+                parent_key: symbol
+                    .parent_id
+                    .as_ref()
+                    .map(|parent| format!("{}::{}", file.relative_path, parent.0)),
+                name: symbol.name.clone(),
+                kind: symbol.kind,
+                path: file.relative_path,
+                source: file.source,
+                language: file.language,
+                location: symbol.location.clone(),
+                annotations: annotations_by_symbol
+                    .remove(&symbol.id.0)
+                    .unwrap_or_default(),
+                base_types: bases_by_symbol.remove(&symbol.id.0).unwrap_or_default(),
+                calls: calls_by_symbol.remove(&symbol.id.0).unwrap_or_default(),
+            });
         }
 
         for item in output.diagnostics {
@@ -341,6 +426,14 @@ pub fn analyze_spring_sources(
         ));
         completeness = GraphCompleteness::Partial;
     }
+
+    build_api_endpoints(
+        &spring_symbols,
+        &mut nodes,
+        &mut edges,
+        &mut diagnostics,
+        &mut completeness,
+    )?;
 
     Ok(GraphSnapshotInput {
         snapshot_id: snapshot_id.to_owned(),
@@ -362,6 +455,719 @@ fn analyzer(language: SourceLanguage) -> &'static dyn Analyzer {
     match language {
         SourceLanguage::Java => &JAVA,
         SourceLanguage::Kotlin => &KOTLIN,
+    }
+}
+
+struct MappingSpec {
+    paths: Vec<Option<String>>,
+    methods: Vec<String>,
+    methods_unknown: bool,
+}
+
+fn build_api_endpoints(
+    symbols: &[SpringSymbolFact<'_>],
+    nodes: &mut Vec<GraphNode>,
+    edges: &mut Vec<GraphEdge>,
+    diagnostics: &mut Vec<GraphDiagnostic>,
+    completeness: &mut GraphCompleteness,
+) -> Result<(), String> {
+    let mut types_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, symbol) in symbols.iter().enumerate() {
+        if is_type_symbol(symbol.kind) {
+            types_by_name
+                .entry(symbol.name.clone())
+                .or_default()
+                .push(index);
+        }
+    }
+
+    for (controller_index, controller) in symbols.iter().enumerate() {
+        if !is_controller(controller) {
+            continue;
+        }
+        let ancestry = class_ancestry(controller_index, symbols, &types_by_name);
+        let class_paths = ancestry
+            .iter()
+            .fold(vec![Some(String::new())], |prefixes, index| {
+                let specs: Vec<_> = symbols[*index]
+                    .annotations
+                    .iter()
+                    .filter_map(mapping_spec)
+                    .collect();
+                if specs.is_empty() {
+                    return prefixes;
+                }
+                let paths: Vec<_> = specs
+                    .iter()
+                    .flat_map(|spec| spec.paths.iter().cloned())
+                    .collect();
+                cartesian_paths(&prefixes, &paths)
+            });
+        let class_specs: Vec<_> = ancestry
+            .iter()
+            .flat_map(|index| symbols[*index].annotations.iter().filter_map(mapping_spec))
+            .collect::<Vec<_>>();
+        let class_methods = class_specs
+            .iter()
+            .flat_map(|spec| spec.methods.iter().cloned())
+            .collect::<Vec<_>>();
+
+        let ancestor_keys: HashSet<&str> = ancestry
+            .iter()
+            .map(|index| symbols[*index].key.as_str())
+            .collect();
+        let direct_method_names: HashSet<&str> = symbols
+            .iter()
+            .filter(|symbol| symbol.parent_key.as_deref() == Some(controller.key.as_str()))
+            .filter(|symbol| is_method_symbol(symbol.kind))
+            .map(|symbol| symbol.name.as_str())
+            .collect();
+
+        for handler in symbols.iter().filter(|symbol| {
+            is_method_symbol(symbol.kind)
+                && symbol
+                    .parent_key
+                    .as_deref()
+                    .is_some_and(|parent| ancestor_keys.contains(parent))
+        }) {
+            if handler.parent_key.as_deref() != Some(controller.key.as_str())
+                && direct_method_names.contains(handler.name.as_str())
+            {
+                continue;
+            }
+            let method_specs: Vec<_> = handler
+                .annotations
+                .iter()
+                .filter_map(mapping_spec)
+                .collect();
+            if method_specs.is_empty() {
+                continue;
+            }
+
+            let method_paths: Vec<_> = method_specs
+                .iter()
+                .flat_map(|spec| spec.paths.iter().cloned())
+                .collect();
+            let paths = cartesian_paths(&class_paths, &method_paths);
+            let evidence = handler
+                .annotations
+                .iter()
+                .find(|annotation| mapping_spec(annotation).is_some())
+                .map(|annotation| annotation.evidence.clone())
+                .unwrap_or_else(|| handler.location.clone());
+            let method_constraints: Vec<_> = method_specs
+                .iter()
+                .flat_map(|spec| spec.methods.iter().cloned())
+                .collect();
+            let methods_unknown = class_specs.iter().any(|spec| spec.methods_unknown)
+                || method_specs.iter().any(|spec| spec.methods_unknown);
+            if !class_methods.is_empty()
+                && !method_constraints.is_empty()
+                && class_methods
+                    .iter()
+                    .all(|method| !method_constraints.contains(method))
+            {
+                *completeness = GraphCompleteness::Partial;
+                diagnostics.push(diagnostic(
+                    "mapping_method_conflict",
+                    GraphDiagnosticSeverity::Warning,
+                    format!(
+                        "Class and method HTTP method constraints do not intersect for {}.{}.",
+                        controller.name, handler.name
+                    ),
+                    Some(evidence.clone()),
+                ));
+                continue;
+            }
+            let http_methods = intersect_methods(&class_methods, &method_constraints);
+            let http_methods: Vec<Option<String>> = if http_methods.is_empty() {
+                vec![None]
+            } else {
+                http_methods.into_iter().map(Some).collect()
+            };
+            let parameters = method_parameters(
+                handler.source,
+                &handler.location,
+                handler.language,
+                &handler.name,
+            );
+            let response_type = method_return_type(
+                handler.source,
+                &handler.location,
+                handler.language,
+                &handler.name,
+                handler.kind,
+            );
+            let auth = collect_security_annotations(handler, &ancestry, symbols);
+            let transaction =
+                collect_annotation_metadata("Transactional", handler, &ancestry, symbols);
+
+            for path in &paths {
+                let unresolved_path = path
+                    .as_deref()
+                    .is_none_or(|path| path.contains("${") || path.contains("#{"));
+                if unresolved_path || methods_unknown {
+                    *completeness = GraphCompleteness::Partial;
+                    diagnostics.push(diagnostic(
+                        if unresolved_path {
+                            "unresolved_route_expression"
+                        } else {
+                            "unresolved_route_method"
+                        },
+                        GraphDiagnosticSeverity::Warning,
+                        format!(
+                            "A route mapping expression could not be resolved for {}.{}.",
+                            controller.name, handler.name
+                        ),
+                        Some(evidence.clone()),
+                    ));
+                }
+                for http_method in &http_methods {
+                    let path_label = path.as_deref().unwrap_or("<unknown>");
+                    let method_label = http_method.as_deref().unwrap_or("ANY");
+                    let identity = format!(
+                        "{}:{}:{}:{}:{}",
+                        controller.path, controller.name, handler.path, handler.name, path_label
+                    );
+                    let endpoint_id = stable_node_id(
+                        GraphNodeType::ApiEndpoint,
+                        &format!(
+                            "spring:{}:{}",
+                            content_hash(identity.as_bytes()),
+                            method_label
+                        ),
+                    )?;
+                    let confidence = if unresolved_path || methods_unknown {
+                        Confidence::Unknown
+                    } else if handler.parent_key.as_deref() != Some(controller.key.as_str()) {
+                        Confidence::Inferred
+                    } else {
+                        Confidence::Confirmed
+                    };
+                    nodes.push(GraphNode {
+                        node_id: endpoint_id.clone(),
+                        node_type: GraphNodeType::ApiEndpoint,
+                        name: format!("{method_label} {path_label}"),
+                        qualified_name: Some(format!("{}.{}", controller.name, handler.name)),
+                        file_path: Some(handler.path.to_owned()),
+                        source_evidence: Some(evidence.clone()),
+                        language: Some(handler.language),
+                        metadata: json!({
+                            "httpMethod": http_method,
+                            "path": path,
+                            "handler": {
+                                "controller": controller.name,
+                                "method": handler.name,
+                                "declaringType": handler.parent_key.as_ref().and_then(|parent| {
+                                    symbols.iter().find(|symbol| &symbol.key == parent).map(|symbol| symbol.name.as_str())
+                                }),
+                                "inherited": handler.parent_key.as_deref() != Some(controller.key.as_str())
+                            },
+                            "parameters": parameters,
+                            "responseType": response_type,
+                            "authentication": auth,
+                            "transactional": transaction
+                        }),
+                        confidence,
+                    });
+                    edges.push(make_edge(
+                        &controller.node_id,
+                        GraphEdgeType::Exposes,
+                        Some(endpoint_id.clone()),
+                        Some(format!("{method_label} {path_label}")),
+                        evidence.clone(),
+                        confidence,
+                    )?);
+
+                    for (direction, candidate_type) in
+                        dto_candidates(&parameters, response_type.as_ref())
+                    {
+                        let resolved = resolve_type_fact(&candidate_type, symbols, &types_by_name);
+                        let dto_key = format!(
+                            "{}:{}:{}:{}",
+                            endpoint_id, direction, candidate_type, handler.path
+                        );
+                        let dto_id = stable_node_id(
+                            GraphNodeType::Dto,
+                            &format!("spring:{}", content_hash(dto_key.as_bytes())),
+                        )?;
+                        nodes.push(GraphNode {
+                            node_id: dto_id.clone(),
+                            node_type: GraphNodeType::Dto,
+                            name: simple_type_name(&candidate_type).to_owned(),
+                            qualified_name: Some(candidate_type.clone()),
+                            file_path: resolved.map(|fact| fact.path.to_owned()),
+                            source_evidence: Some(handler.location.clone()),
+                            language: Some(handler.language),
+                            metadata: json!({
+                                "candidateType": candidate_type,
+                                "direction": direction,
+                                "resolvedSymbolId": resolved.map(|fact| fact.node_id.as_str())
+                            }),
+                            confidence: if resolved.is_some() {
+                                Confidence::Inferred
+                            } else {
+                                Confidence::Unknown
+                            },
+                        });
+                        edges.push(make_edge(
+                            &endpoint_id,
+                            GraphEdgeType::UsesDto,
+                            Some(dto_id),
+                            Some(candidate_type),
+                            evidence.clone(),
+                            if resolved.is_some() {
+                                Confidence::Inferred
+                            } else {
+                                Confidence::Unknown
+                            },
+                        )?);
+                    }
+                }
+            }
+        }
+    }
+
+    detect_dynamic_routes(symbols, diagnostics, completeness);
+    Ok(())
+}
+
+fn is_type_symbol(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Class
+            | SymbolKind::Interface
+            | SymbolKind::Enum
+            | SymbolKind::Record
+            | SymbolKind::Object
+    )
+}
+
+fn is_method_symbol(kind: SymbolKind) -> bool {
+    matches!(kind, SymbolKind::Method | SymbolKind::Function)
+}
+
+fn is_controller(symbol: &SpringSymbolFact<'_>) -> bool {
+    is_type_symbol(symbol.kind)
+        && symbol.annotations.iter().any(|annotation| {
+            matches!(
+                short_annotation_name(&annotation.name),
+                "RestController" | "Controller"
+            )
+        })
+}
+
+fn class_ancestry(
+    start: usize,
+    symbols: &[SpringSymbolFact<'_>],
+    types_by_name: &HashMap<String, Vec<usize>>,
+) -> Vec<usize> {
+    let mut chain = vec![start];
+    let mut visited = HashSet::from([start]);
+    let mut current = start;
+    for _ in 0..16 {
+        let base = symbols[current].base_types.iter().find_map(|name| {
+            let simple = simple_type_name(name);
+            let matches = types_by_name.get(simple)?;
+            (matches.len() == 1).then_some(matches[0])
+        });
+        let Some(base) = base else { break };
+        if !visited.insert(base) {
+            break;
+        }
+        chain.push(base);
+        current = base;
+    }
+    chain.reverse();
+    chain
+}
+
+fn mapping_spec(annotation: &SpringAnnotation) -> Option<MappingSpec> {
+    let name = short_annotation_name(&annotation.name);
+    let fixed_method = match name {
+        "GetMapping" => Some("GET"),
+        "PostMapping" => Some("POST"),
+        "PutMapping" => Some("PUT"),
+        "PatchMapping" => Some("PATCH"),
+        "DeleteMapping" => Some("DELETE"),
+        "RequestMapping" => None,
+        _ => return None,
+    };
+    let arguments = annotation_arguments_map(&annotation.arguments);
+    let path_argument = arguments.get("path").or_else(|| arguments.get("value"));
+    let paths =
+        path_argument.map_or_else(|| vec![Some(String::new())], |raw| literal_path_values(raw));
+    let mut methods = fixed_method
+        .map(|method| vec![method.to_owned()])
+        .unwrap_or_default();
+    let mut methods_unknown = false;
+    if name == "RequestMapping" {
+        if let Some(raw) = arguments.get("method") {
+            methods.extend(parse_http_methods(raw));
+            methods.sort();
+            methods.dedup();
+            methods_unknown = methods.is_empty();
+        }
+    }
+    Some(MappingSpec {
+        paths,
+        methods,
+        methods_unknown,
+    })
+}
+
+fn annotation_arguments_map(arguments: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    for (index, part) in split_top_level(arguments, ',').iter().enumerate() {
+        if let Some((key, value)) = part.split_once('=') {
+            values.insert(key.trim().to_owned(), value.trim().to_owned());
+        } else if index == 0 && !part.trim().is_empty() {
+            values.insert("value".to_owned(), part.trim().to_owned());
+        }
+    }
+    values
+}
+
+fn literal_path_values(raw: &str) -> Vec<Option<String>> {
+    let literals = quoted_string_literals(raw);
+    if literals.is_empty() {
+        if raw.trim().is_empty() {
+            vec![Some(String::new())]
+        } else {
+            vec![None]
+        }
+    } else {
+        literals.into_iter().map(Some).collect()
+    }
+}
+
+fn quoted_string_literals(input: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut active = None;
+    let mut escaped = false;
+    let mut current = String::new();
+    for character in input.chars() {
+        if let Some(quote) = active {
+            if escaped {
+                current.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote {
+                literals.push(std::mem::take(&mut current));
+                active = None;
+            } else {
+                current.push(character);
+            }
+        } else if matches!(character, '"' | '\'') {
+            active = Some(character);
+        }
+    }
+    literals
+}
+
+fn parse_http_methods(raw: &str) -> Vec<String> {
+    [
+        "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE",
+    ]
+    .into_iter()
+    .filter(|method| {
+        raw.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .any(|part| part == *method)
+    })
+    .map(str::to_owned)
+    .collect()
+}
+
+fn cartesian_paths(
+    prefixes: &[Option<String>],
+    suffixes: &[Option<String>],
+) -> Vec<Option<String>> {
+    let mut paths = Vec::new();
+    for prefix in prefixes {
+        for suffix in suffixes {
+            paths.push(match (prefix, suffix) {
+                (Some(prefix), Some(suffix)) => Some(join_route_paths(prefix, suffix)),
+                _ => None,
+            });
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn join_route_paths(prefix: &str, suffix: &str) -> String {
+    let left = prefix.trim_matches('/');
+    let right = suffix.trim_matches('/');
+    match (left.is_empty(), right.is_empty()) {
+        (true, true) => "/".to_owned(),
+        (true, false) => format!("/{right}"),
+        (false, true) => format!("/{left}"),
+        (false, false) => format!("/{left}/{right}"),
+    }
+}
+
+fn intersect_methods(class_methods: &[String], method_methods: &[String]) -> Vec<String> {
+    let mut methods = match (class_methods.is_empty(), method_methods.is_empty()) {
+        (true, true) => Vec::new(),
+        (true, false) => method_methods.to_vec(),
+        (false, true) => class_methods.to_vec(),
+        (false, false) => class_methods
+            .iter()
+            .filter(|method| method_methods.contains(method))
+            .cloned()
+            .collect(),
+    };
+    methods.sort();
+    methods.dedup();
+    methods
+}
+
+fn method_parameter_parens(declaration: &str, method_name: Option<&str>) -> Option<(usize, usize)> {
+    let named_open = method_name.and_then(|method_name| {
+        declaration
+            .match_indices(method_name)
+            .find_map(|(start, matched)| {
+                let preceding = declaration[..start].chars().next_back();
+                if preceding.is_some_and(|character| !character.is_whitespace() && character != '>')
+                {
+                    return None;
+                }
+                let after_name = start + matched.len();
+                let suffix = declaration.get(after_name..)?;
+                let whitespace = suffix.len() - suffix.trim_start().len();
+                (suffix[whitespace..].starts_with('(')).then_some(after_name + whitespace)
+            })
+    });
+    let open = named_open.or_else(|| declaration.find('('))?;
+    let close = matching_delimiter(declaration, open, '(', ')')?;
+    Some((open, close))
+}
+
+fn method_parameters(
+    source: &str,
+    range: &SourceRange,
+    language: SourceLanguage,
+    method_name: &str,
+) -> Vec<Value> {
+    let Some(declaration) = source.get(range.start_byte..range.end_byte) else {
+        return Vec::new();
+    };
+    let Some((open, close)) = method_parameter_parens(declaration, Some(method_name)) else {
+        return Vec::new();
+    };
+    split_top_level(&declaration[open + 1..close], ',')
+        .into_iter()
+        .filter_map(|parameter| parameter_metadata(parameter, language))
+        .collect()
+}
+
+fn parameter_metadata(parameter: &str, language: SourceLanguage) -> Option<Value> {
+    let (name, type_name) = match language {
+        SourceLanguage::Kotlin => {
+            let (before_colon, after_colon) = parameter.split_once(':')?;
+            let name = strip_leading_annotations(before_colon)
+                .split_whitespace()
+                .last()?
+                .trim_start_matches("vararg ")
+                .trim_start_matches("val ")
+                .trim_start_matches("var ")
+                .to_owned();
+            let type_name = normalize_type_name(after_colon.split('=').next()?.trim())?;
+            (name, type_name)
+        }
+        SourceLanguage::Java => {
+            let stripped = strip_leading_annotations(parameter);
+            let parameter = stripped.trim();
+            let name_end = parameter.trim_end().len();
+            let name_start = parameter[..name_end].rfind(char::is_whitespace)?;
+            let name = parameter[name_start..name_end].trim().to_owned();
+            let type_name = extract_trailing_type(&parameter[..name_start])?;
+            (name, type_name)
+        }
+    };
+    let binding = [
+        "RequestBody",
+        "PathVariable",
+        "RequestParam",
+        "RequestHeader",
+        "CookieValue",
+    ]
+    .into_iter()
+    .find(|annotation| parameter.contains(annotation));
+    Some(json!({"name": name, "type": type_name, "binding": binding}))
+}
+
+fn method_return_type(
+    source: &str,
+    range: &SourceRange,
+    language: SourceLanguage,
+    method_name: &str,
+    kind: SymbolKind,
+) -> Option<String> {
+    if kind == SymbolKind::Constructor {
+        return None;
+    }
+    let declaration = source.get(range.start_byte..range.end_byte)?;
+    let (open, close) = method_parameter_parens(declaration, Some(method_name))?;
+    match language {
+        SourceLanguage::Kotlin => {
+            let suffix = declaration.get(close + 1..)?;
+            let (_, after_colon) = suffix.split_once(':')?;
+            let type_name = after_colon.split(['=', '{', '\n', ';']).next()?.trim();
+            normalize_type_name(type_name)
+        }
+        SourceLanguage::Java => {
+            let name_start = declaration[..open].rfind(method_name)?;
+            extract_trailing_type(&declaration[..name_start])
+        }
+    }
+}
+
+fn dto_candidates(
+    parameters: &[Value],
+    response_type: Option<&String>,
+) -> Vec<(&'static str, String)> {
+    let mut candidates = parameters
+        .iter()
+        .filter_map(|parameter| parameter.get("type").and_then(Value::as_str))
+        .filter_map(candidate_dto_type)
+        .map(|type_name| ("request", type_name))
+        .collect::<Vec<_>>();
+    if let Some(response_type) = response_type.and_then(|type_name| candidate_dto_type(type_name)) {
+        candidates.push(("response", response_type));
+    }
+    candidates.sort_by(|left, right| left.0.cmp(right.0).then(left.1.cmp(&right.1)));
+    candidates.dedup();
+    candidates
+}
+
+fn candidate_dto_type(type_name: &str) -> Option<String> {
+    let mut candidate = type_name.trim();
+    if let (Some(open), Some(close)) = (candidate.find('<'), candidate.rfind('>')) {
+        if open < close {
+            let nested = split_top_level(&candidate[open + 1..close], ',');
+            candidate = nested.first()?.trim();
+            return candidate_dto_type(candidate);
+        }
+    }
+    let simple = simple_type_name(candidate);
+    let framework_or_scalar = matches!(
+        simple,
+        "void"
+            | "Void"
+            | "Unit"
+            | "String"
+            | "CharSequence"
+            | "Boolean"
+            | "Byte"
+            | "Short"
+            | "Integer"
+            | "Long"
+            | "Float"
+            | "Double"
+            | "BigDecimal"
+            | "BigInteger"
+            | "ResponseEntity"
+            | "HttpEntity"
+            | "ModelAndView"
+    );
+    (!framework_or_scalar && !candidate.starts_with("?")).then(|| candidate.to_owned())
+}
+
+fn simple_type_name(type_name: &str) -> &str {
+    type_name
+        .trim()
+        .trim_end_matches('?')
+        .split(['<', '['])
+        .next()
+        .unwrap_or(type_name)
+        .trim()
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_name)
+}
+
+fn resolve_type_fact<'a>(
+    type_name: &str,
+    symbols: &'a [SpringSymbolFact<'a>],
+    types_by_name: &HashMap<String, Vec<usize>>,
+) -> Option<&'a SpringSymbolFact<'a>> {
+    let simple = simple_type_name(type_name);
+    let matches = types_by_name.get(simple)?;
+    (matches.len() == 1).then(|| &symbols[matches[0]])
+}
+
+fn collect_security_annotations(
+    handler: &SpringSymbolFact<'_>,
+    ancestry: &[usize],
+    symbols: &[SpringSymbolFact<'_>],
+) -> Vec<Value> {
+    const SECURITY_ANNOTATIONS: &[&str] = &[
+        "PreAuthorize",
+        "PostAuthorize",
+        "Secured",
+        "RolesAllowed",
+        "PermitAll",
+        "DenyAll",
+    ];
+    let mut result = Vec::new();
+    for symbol in ancestry
+        .iter()
+        .map(|index| &symbols[*index])
+        .chain(std::iter::once(handler))
+    {
+        for annotation in &symbol.annotations {
+            let name = short_annotation_name(&annotation.name);
+            if SECURITY_ANNOTATIONS.contains(&name) {
+                result.push(json!({"annotation": name, "arguments": annotation.arguments}));
+            }
+        }
+    }
+    result
+}
+
+fn collect_annotation_metadata(
+    expected: &str,
+    handler: &SpringSymbolFact<'_>,
+    ancestry: &[usize],
+    symbols: &[SpringSymbolFact<'_>],
+) -> Vec<Value> {
+    ancestry
+        .iter()
+        .map(|index| &symbols[*index])
+        .chain(std::iter::once(handler))
+        .flat_map(|symbol| symbol.annotations.iter())
+        .filter(|annotation| short_annotation_name(&annotation.name) == expected)
+        .map(|annotation| json!({"annotation": annotation.name, "arguments": annotation.arguments}))
+        .collect()
+}
+
+fn detect_dynamic_routes(
+    symbols: &[SpringSymbolFact<'_>],
+    diagnostics: &mut Vec<GraphDiagnostic>,
+    completeness: &mut GraphCompleteness,
+) {
+    for symbol in symbols {
+        for (target, evidence) in &symbol.calls {
+            let short_name = target.rsplit(['.', '#']).next().unwrap_or(target);
+            let dynamic_registration = short_name == "registerMapping"
+                || (short_name == "route" && symbol.source.contains("RouterFunction"));
+            if !dynamic_registration {
+                continue;
+            }
+            *completeness = GraphCompleteness::Partial;
+            diagnostics.push(diagnostic(
+                "dynamic_route_registration_unknown",
+                GraphDiagnosticSeverity::Info,
+                format!(
+                    "Dynamic Spring route registration is present and was not resolved: {}",
+                    symbol.path
+                ),
+                Some(evidence.clone()),
+            ));
+        }
     }
 }
 
@@ -427,30 +1233,38 @@ fn short_annotation_name(name: &str) -> &str {
 }
 
 fn annotation_attributes(source: &str, range: &SourceRange) -> Value {
-    let Some(annotation) = source.get(range.start_byte..range.end_byte) else {
-        return Value::Object(Map::new());
-    };
-    let Some(open) = annotation.find('(') else {
-        return Value::Object(Map::new());
-    };
-    let Some(close) = annotation.rfind(')') else {
-        return Value::Object(Map::new());
-    };
-    let arguments = annotation[open + 1..close].trim();
+    let arguments = annotation_arguments(source, range);
     if arguments.is_empty() {
-        return Value::Object(Map::new());
+        Value::Object(Map::new())
+    } else {
+        json!({"raw": arguments})
     }
-    json!({"raw": arguments})
 }
 
-fn parameter_types(source: &str, range: &SourceRange, language: SourceLanguage) -> Vec<String> {
+fn annotation_arguments(source: &str, range: &SourceRange) -> String {
+    let Some(annotation) = source.get(range.start_byte..range.end_byte) else {
+        return String::new();
+    };
+    let Some(open) = annotation.find('(') else {
+        return String::new();
+    };
+    let Some(close) = annotation.rfind(')') else {
+        return String::new();
+    };
+    let arguments = annotation[open + 1..close].trim();
+    arguments.to_owned()
+}
+
+fn parameter_types(
+    source: &str,
+    range: &SourceRange,
+    language: SourceLanguage,
+    method_name: &str,
+) -> Vec<String> {
     let Some(declaration) = source.get(range.start_byte..range.end_byte) else {
         return Vec::new();
     };
-    let Some(open) = declaration.find('(') else {
-        return Vec::new();
-    };
-    let Some(close) = matching_delimiter(declaration, open, '(', ')') else {
+    let Some((open, close)) = method_parameter_parens(declaration, Some(method_name)) else {
         return Vec::new();
     };
     split_top_level(&declaration[open + 1..close], ',')
@@ -890,6 +1704,138 @@ import org.springframework.web.bind.annotation.RestController
                 && edge.target_node_id.as_deref() == Some(user_service.node_id.as_str())
                 && edge.confidence == Confidence::Inferred
         }));
+    }
+
+    #[test]
+    fn joins_mvc_mapping_paths_and_links_request_response_dto_candidates() {
+        let source = r#"
+package sample;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping(value = "/api")
+@PreAuthorize("hasRole('USER')")
+class UserController {
+    @PostMapping(path = "/users")
+    public ResponseEntity<UserDto> create(@RequestBody UserDto request) { return null; }
+}
+class UserDto {}
+"#;
+        let snapshot = analyze_spring_sources(
+            "snapshot-route",
+            &[SpringSourceFile {
+                relative_path: "src/main/java/sample/UserController.java",
+                source,
+                language: SourceLanguage::Java,
+            }],
+        )
+        .unwrap();
+        let endpoint = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.node_type == GraphNodeType::ApiEndpoint)
+            .expect("endpoint node");
+        assert_eq!(endpoint.metadata["httpMethod"], "POST");
+        assert_eq!(endpoint.metadata["path"], "/api/users");
+        assert_eq!(endpoint.metadata["handler"]["method"], "create");
+        assert_eq!(
+            endpoint.metadata["parameters"][0]["type"], "UserDto",
+            "{endpoint:?}"
+        );
+        assert_eq!(endpoint.metadata["parameters"][0]["binding"], "RequestBody");
+        assert_eq!(endpoint.metadata["responseType"], "ResponseEntity<UserDto>");
+        assert_eq!(
+            endpoint.metadata["authentication"][0]["annotation"],
+            "PreAuthorize"
+        );
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.node_type == GraphNodeType::Dto
+                && node.name == "UserDto"
+                && node.metadata["direction"] == "request"
+        }));
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.node_type == GraphNodeType::Dto
+                && node.name == "UserDto"
+                && node.metadata["direction"] == "response"
+        }));
+    }
+
+    #[test]
+    fn reports_inherited_controller_mapping_as_an_inferred_candidate() {
+        let base = r#"
+package sample;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+@RequestMapping("/base")
+class BaseController {
+    @GetMapping("/items")
+    public String list() { return "items"; }
+}
+"#;
+        let controller = r#"
+package sample;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+@RestController
+@RequestMapping("/api")
+class ItemController extends BaseController {}
+"#;
+        let snapshot = analyze_spring_sources(
+            "snapshot-inherited-route",
+            &[
+                SpringSourceFile {
+                    relative_path: "src/main/java/sample/BaseController.java",
+                    source: base,
+                    language: SourceLanguage::Java,
+                },
+                SpringSourceFile {
+                    relative_path: "src/main/java/sample/ItemController.java",
+                    source: controller,
+                    language: SourceLanguage::Java,
+                },
+            ],
+        )
+        .unwrap();
+        let endpoint = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.node_type == GraphNodeType::ApiEndpoint)
+            .expect("inherited endpoint");
+        assert_eq!(endpoint.metadata["path"], "/base/api/items");
+        assert_eq!(endpoint.metadata["handler"]["controller"], "ItemController");
+        assert_eq!(endpoint.metadata["handler"]["method"], "list");
+        assert_eq!(endpoint.metadata["handler"]["inherited"], true);
+        assert_eq!(endpoint.confidence, Confidence::Inferred);
+    }
+
+    #[test]
+    fn marks_dynamic_spring_route_registration_unknown() {
+        let source = r#"
+package sample;
+class DynamicRoutes {
+    void register(Object mappings, Object handler) {
+        mappings.registerMapping("/runtime", handler);
+    }
+}
+"#;
+        let snapshot = analyze_spring_sources(
+            "snapshot-dynamic-route",
+            &[SpringSourceFile {
+                relative_path: "src/main/java/sample/DynamicRoutes.java",
+                source,
+                language: SourceLanguage::Java,
+            }],
+        )
+        .unwrap();
+        assert_eq!(snapshot.completeness, GraphCompleteness::Partial);
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "dynamic_route_registration_unknown" })
+        );
     }
 
     #[test]
