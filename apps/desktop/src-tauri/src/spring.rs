@@ -62,6 +62,7 @@ pub fn analyze_spring_sources(
     let mut completeness = GraphCompleteness::Complete;
     let mut seen_paths = HashSet::new();
     let mut spring_symbols = Vec::new();
+    let mut pending_injections = Vec::new();
 
     for file in files.iter().take(MAX_SOURCE_FILES) {
         if !seen_paths.insert(file.relative_path) {
@@ -251,25 +252,6 @@ pub fn analyze_spring_sources(
                     .map(|_| symbol_id.clone())
             })
             .collect();
-        let mut local_types: HashMap<String, Vec<String>> = HashMap::new();
-        for symbol in &output.symbols {
-            if matches!(
-                symbol.kind,
-                SymbolKind::Class
-                    | SymbolKind::Interface
-                    | SymbolKind::Enum
-                    | SymbolKind::Record
-                    | SymbolKind::Object
-            ) {
-                if let Some(node_id) = symbol_ids.get(&symbol.id.0) {
-                    local_types
-                        .entry(symbol.name.clone())
-                        .or_default()
-                        .push(node_id.clone());
-                }
-            }
-        }
-
         let mut constructors_by_class: HashMap<String, Vec<&crate::analyzer::AnalyzerSymbol>> =
             HashMap::new();
         for symbol in &output.symbols {
@@ -282,7 +264,6 @@ pub fn analyze_spring_sources(
                 }
             }
         }
-        let mut emitted_dependencies = HashSet::new();
         for class_id in &bean_classes {
             if let (Some(class_node_id), Some(constructors)) = (
                 symbol_ids.get(class_id),
@@ -302,15 +283,12 @@ pub fn analyze_spring_sources(
                         file.language,
                         &constructor.name,
                     ) {
-                        push_injection_edge(
-                            &mut edges,
-                            &mut emitted_dependencies,
-                            class_node_id,
-                            &dependency,
-                            &constructor.location,
-                            &local_types,
+                        pending_injections.push((
+                            class_node_id.clone(),
+                            dependency,
+                            constructor.location.clone(),
                             confidence,
-                        )?;
+                        ));
                     }
                 }
             }
@@ -338,15 +316,12 @@ pub fn analyze_spring_sources(
                     .collect()
             };
             for dependency in dependencies {
-                push_injection_edge(
-                    &mut edges,
-                    &mut emitted_dependencies,
-                    parent,
-                    &dependency,
-                    &symbol.location,
-                    &local_types,
+                pending_injections.push((
+                    parent.clone(),
+                    dependency,
+                    symbol.location.clone(),
                     Confidence::Confirmed,
-                )?;
+                ));
             }
         }
 
@@ -425,6 +400,35 @@ pub fn analyze_spring_sources(
             None,
         ));
         completeness = GraphCompleteness::Partial;
+    }
+
+    let mut project_types: HashMap<String, Vec<String>> = HashMap::new();
+    for symbol in &spring_symbols {
+        if matches!(
+            symbol.kind,
+            SymbolKind::Class
+                | SymbolKind::Interface
+                | SymbolKind::Enum
+                | SymbolKind::Record
+                | SymbolKind::Object
+        ) {
+            project_types
+                .entry(symbol.name.clone())
+                .or_default()
+                .push(symbol.node_id.clone());
+        }
+    }
+    let mut emitted_dependencies = HashSet::new();
+    for (owner_node_id, dependency, evidence, confidence) in pending_injections {
+        push_injection_edge(
+            &mut edges,
+            &mut emitted_dependencies,
+            &owner_node_id,
+            &dependency,
+            &evidence,
+            &project_types,
+            confidence,
+        )?;
     }
 
     build_api_endpoints(
@@ -1666,6 +1670,55 @@ class UserController {
             edge.edge_type == crate::knowledge_graph::GraphEdgeType::Injects
                 && edge.source_node_id == controller.node_id
                 && edge.target_node_id.as_deref() == Some(account_service.node_id.as_str())
+                && edge.confidence == Confidence::Inferred
+        }));
+    }
+
+    #[test]
+    fn resolves_constructor_injection_across_source_files() {
+        let consumer = r#"
+package sample;
+import org.springframework.stereotype.Service;
+@Service class AlertService {
+    AlertService(AlertSender sender) {}
+}
+"#;
+        let dependency = r#"
+package sample;
+import org.springframework.stereotype.Service;
+@Service class AlertSender {}
+"#;
+        let snapshot = analyze_spring_sources(
+            "snapshot-cross-file-injection",
+            &[
+                SpringSourceFile {
+                    relative_path: "src/main/java/sample/AlertService.java",
+                    source: consumer,
+                    language: SourceLanguage::Java,
+                },
+                SpringSourceFile {
+                    relative_path: "src/main/java/sample/AlertSender.java",
+                    source: dependency,
+                    language: SourceLanguage::Java,
+                },
+            ],
+        )
+        .unwrap();
+        let service = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.name == "AlertService")
+            .unwrap();
+        let sender = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.name == "AlertSender")
+            .unwrap();
+
+        assert!(snapshot.edges.iter().any(|edge| {
+            edge.edge_type == crate::knowledge_graph::GraphEdgeType::Injects
+                && edge.source_node_id == service.node_id
+                && edge.target_node_id.as_deref() == Some(sender.node_id.as_str())
                 && edge.confidence == Confidence::Inferred
         }));
     }
