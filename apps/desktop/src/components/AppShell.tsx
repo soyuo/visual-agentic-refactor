@@ -206,7 +206,7 @@ function AppShell(props: AppShellProps) {
             }}
           />
         ) : activeView() === "review" ? (
-          <AiReviewWorkspace />
+          <AiReviewWorkspace project={props.project} selectedEntry={props.selectedEntry} />
         ) : <>
         <div class="content-heading">
           <div>
