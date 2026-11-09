@@ -1,3 +1,4 @@
+pub mod ai_provider;
 pub mod analyzer;
 pub mod command_error;
 pub mod commands;
