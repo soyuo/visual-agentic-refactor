@@ -23,6 +23,14 @@ export interface AppInfoResponse {
   version: string;
 }
 
+export type CredentialProvider = "openai" | "anthropic";
+
+export interface ProviderCredentialStatus {
+  provider: CredentialProvider;
+  displayName: string;
+  configured: boolean;
+}
+
 export interface OpenProjectResponse {
   path: string;
   name: string;
@@ -400,6 +408,33 @@ export async function listenToTaskProgress(
     return await listen<TaskProgressEvent>("task-progress", (event) => {
       onProgress(event.payload);
     });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function listProviderCredentials(): Promise<ProviderCredentialStatus[]> {
+  try {
+    return await invoke<ProviderCredentialStatus[]>("list_provider_credentials");
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function saveProviderCredential(
+  provider: CredentialProvider,
+  credential: string,
+): Promise<void> {
+  try {
+    await invoke("save_provider_credential", { request: { provider, credential } });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function deleteProviderCredential(provider: CredentialProvider): Promise<void> {
+  try {
+    await invoke("delete_provider_credential", { request: { provider } });
   } catch (error) {
     throw toAppCommandError(error);
   }

@@ -1,0 +1,172 @@
+.ai-review-workspace {
+  width: min(100%, 980px);
+  margin: 0 auto;
+}
+
+.ai-settings-card,
+.ai-transfer-note {
+  border: 1px solid #e7ebf3;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 28px rgb(40 54 93 / 4%);
+}
+
+.ai-settings-card {
+  padding: 24px;
+}
+
+.ai-settings-heading,
+.credential-provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ai-settings-heading h2,
+.ai-transfer-note h2 {
+  margin: 0;
+  color: #202a3c;
+  font-size: 16px;
+}
+
+.ai-settings-heading p,
+.ai-transfer-note p {
+  margin: 5px 0 0;
+  color: #788399;
+  font-size: 12px;
+}
+
+.credential-provider-list {
+  margin: 20px 0;
+  border-top: 1px solid #edf0f5;
+}
+
+.credential-provider-row {
+  min-height: 64px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.credential-provider-row > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.credential-provider-row strong {
+  min-width: 88px;
+  color: #303b51;
+  font-size: 13px;
+}
+
+.credential-provider-row span {
+  color: #8992a3;
+  font-size: 12px;
+}
+
+.credential-provider-row .credential-configured {
+  color: #27805c;
+}
+
+.credential-form {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.credential-form label {
+  color: #58647a;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.credential-form select,
+.credential-form input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 11px;
+  border: 1px solid #dce2ed;
+  border-radius: 8px;
+  background: #fff;
+  color: #28344a;
+  font: inherit;
+}
+
+.credential-form input {
+  grid-column: 2;
+}
+
+.credential-form button {
+  grid-column: 2;
+  justify-self: start;
+  white-space: nowrap;
+}
+
+.credential-form select {
+  grid-column: 2;
+}
+
+.credential-notice {
+  margin: 14px 0 0;
+  color: #27805c;
+  font-size: 12px;
+}
+
+.muted-message {
+  color: #8992a3;
+  font-size: 12px;
+}
+
+.text-button {
+  border: 0;
+  background: transparent;
+  color: #53627b;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.danger-text {
+  color: #b64b53;
+}
+
+.text-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.ai-transfer-note {
+  display: flex;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 19px 21px;
+  border-color: #e9e5d8;
+  background: #fffdf7;
+}
+
+.transfer-shield {
+  display: grid;
+  flex: 0 0 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 9px;
+  background: #f5edd4;
+  color: #98752b;
+  font-weight: 750;
+}
+
+.ai-transfer-note strong {
+  display: block;
+  margin-top: 9px;
+  color: #6a5a2d;
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .credential-form {
+    grid-template-columns: minmax(100px, 130px) minmax(0, 1fr);
+  }
+}
