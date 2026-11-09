@@ -145,6 +145,27 @@ export interface GraphSnapshot extends GraphSnapshotSummary {
   diagnostics: GraphDiagnostic[];
 }
 
+export type ReviewContextScope =
+  | { file: { relativePath: string; range: SourceRange | null } }
+  | { graphNode: { nodeId: string } };
+
+export interface PreviewReviewContextRequest {
+  projectPath: string;
+  scope: ReviewContextScope;
+  maxContextTokens: number;
+}
+
+export interface ReviewContextPreview {
+  context: string;
+  estimatedTokens: number;
+  tokenBudget: number;
+  includedFiles: string[];
+  omittedItems: string[];
+  graphSnapshotId: string | null;
+  graphCompleteness: string | null;
+  tokenEstimateNote: string;
+}
+
 export interface AnalyzeSpringProjectResponse {
   projectPath: string;
   snapshotId: string;
@@ -338,6 +359,16 @@ export async function getGraphSnapshot(
     return await invoke<GraphSnapshot | null>("get_graph_snapshot", {
       request: { projectPath, snapshotId },
     });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function previewReviewContext(
+  request: PreviewReviewContextRequest,
+): Promise<ReviewContextPreview> {
+  try {
+    return await invoke<ReviewContextPreview>("preview_review_context", { request });
   } catch (error) {
     throw toAppCommandError(error);
   }
