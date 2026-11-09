@@ -2,6 +2,7 @@ pub mod ai_provider;
 pub mod analyzer;
 pub mod command_error;
 pub mod commands;
+pub mod credentials;
 pub mod events;
 pub mod git_status;
 pub mod java;
@@ -28,6 +29,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::app::get_app_info,
+            commands::credentials::list_provider_credentials,
+            commands::credentials::save_provider_credential,
+            commands::credentials::delete_provider_credential,
             commands::git::get_git_status,
             commands::project::open_project,
             commands::project::get_last_project,
