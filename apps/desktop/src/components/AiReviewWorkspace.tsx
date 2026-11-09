@@ -2,6 +2,11 @@ import { createEffect, createSignal, onMount, Show } from "solid-js";
 import {
   deleteProviderCredential,
   listProviderCredentials,
+  listReviewSessions,
+  loadReviewSession,
+  approveReviewTransfer,
+  runAiReview,
+  setFindingDecision as persistFindingDecision,
   saveProviderCredential,
   previewReviewContext,
   toAppCommandError,
@@ -11,9 +16,13 @@ import {
   type OpenProjectResponse,
   type ReviewContextPreview,
   type ReviewContextScope,
+  type ReviewFindingSelection,
   type ScanEntry,
+  type StoredReviewSession,
+  type StoredReviewSessionSummary,
 } from "../lib/commands";
 import { isSensitiveTransferPath } from "../lib/externalTransferSafety";
+import { findingDecisionLabel, reviewOutcomeLabel, reviewOutcomeState } from "../lib/aiReviewViewModel";
 import "./AiReviewWorkspace.css";
 
 const providers: Array<{ id: CredentialProvider; label: string }> = [
@@ -26,6 +35,7 @@ interface AiReviewWorkspaceProps {
   selectedEntry: ScanEntry | null;
   graphSnapshot: GraphSnapshot | null;
   selectedGraphNodeId: string | null;
+  onCancelTask: () => void;
 }
 
 function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
@@ -43,7 +53,21 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [contextPreview, setContextPreview] = createSignal<ReviewContextPreview | null>(null);
   const [previewLoading, setPreviewLoading] = createSignal(false);
   const [previewError, setPreviewError] = createSignal<string | null>(null);
+  const [model, setModel] = createSignal("");
+  const [reviewRunning, setReviewRunning] = createSignal(false);
+  const [reviewError, setReviewError] = createSignal<string | null>(null);
+  const [reviewNotice, setReviewNotice] = createSignal<string | null>(null);
+  const [reviewMetadata, setReviewMetadata] = createSignal<string | null>(null);
+  const [sessions, setSessions] = createSignal<StoredReviewSessionSummary[]>([]);
+  const [activeSession, setActiveSession] = createSignal<StoredReviewSession | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = createSignal("");
+  const [sessionLoading, setSessionLoading] = createSignal(false);
+  const [sessionError, setSessionError] = createSignal<string | null>(null);
+  const [savingDecisionKeys, setSavingDecisionKeys] = createSignal<string[]>([]);
   let previewRequestVersion = 0;
+  let sessionRequestVersion = 0;
+  let consentDialog: HTMLElement | undefined;
+  let returnFocus: HTMLElement | null = null;
 
   const selectedFile = () => {
     const entry = props.selectedEntry;
@@ -69,9 +93,24 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const scopeLabel = () => scopeKind() === "graphNode"
     ? selectedGraphNode()?.qualifiedName ?? selectedGraphNode()?.name ?? graphNodePath()
     : selectedFile()?.relativePath;
+  const reviewSelection = (): ReviewFindingSelection | null => {
+    const scope = currentScope();
+    if (!scope) return null;
+    if ("file" in scope) return { file: scope.file };
+    const node = selectedGraphNode();
+    if (!node) return null;
+    return {
+      graphNode: {
+        nodeId: node.nodeId,
+        label: node.qualifiedName ?? node.name,
+        range: node.sourceEvidence,
+      },
+    };
+  };
   const scopeKey = () => JSON.stringify([
     props.project?.path ?? "",
     selectedProvider(),
+    model().trim(),
     scopeKind(),
     selectedFile()?.relativePath ?? "",
     props.selectedGraphNodeId ?? "",
@@ -92,6 +131,30 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   });
 
   onMount(() => void refreshStatuses());
+
+  createEffect(() => {
+    const path = props.project?.path ?? "";
+    const requestVersion = ++sessionRequestVersion;
+    setSessions([]);
+    setActiveSession(null);
+    setSelectedSessionId("");
+    setSessionError(null);
+    if (!path) return;
+    setSessionLoading(true);
+    void listReviewSessions(path).then((items) => {
+      if (requestVersion === sessionRequestVersion && props.project?.path === path) setSessions(items);
+    }).catch((cause: unknown) => {
+      if (requestVersion === sessionRequestVersion && props.project?.path === path) {
+        setSessionError(toAppCommandError(cause).message);
+      }
+    }).finally(() => {
+      if (requestVersion === sessionRequestVersion) setSessionLoading(false);
+    });
+  });
+
+  createEffect(() => {
+    if (consentDialogOpen()) queueMicrotask(() => consentDialog?.querySelector<HTMLElement>('button:not([disabled])')?.focus());
+  });
 
   async function refreshStatuses() {
     setLoading(true);
@@ -166,6 +229,141 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
       }
     } finally {
       if (requestVersion === previewRequestVersion) setPreviewLoading(false);
+    }
+  }
+
+  async function loadSession(sessionId: string) {
+    const projectPath = props.project?.path;
+    const requestVersion = ++sessionRequestVersion;
+    setSelectedSessionId(sessionId);
+    setSessionError(null);
+    setReviewMetadata(null);
+    if (!projectPath || !sessionId) {
+      setActiveSession(null);
+      return;
+    }
+
+    setSessionLoading(true);
+    try {
+      const session = await loadReviewSession(projectPath, sessionId);
+      if (requestVersion === sessionRequestVersion && props.project?.path === projectPath) {
+        setActiveSession(session);
+      }
+    } catch (cause: unknown) {
+      if (requestVersion === sessionRequestVersion && props.project?.path === projectPath) {
+        setSessionError(toAppCommandError(cause).message);
+      }
+    } finally {
+      if (requestVersion === sessionRequestVersion) setSessionLoading(false);
+    }
+  }
+
+  function openConsentDialog() {
+    returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setConsentDecision(null);
+    setReviewError(null);
+    setConsentDialogOpen(true);
+  }
+
+  function closeConsentDialog(decision: "rejected" | "cancelled") {
+    setConsentDecision(decision);
+    setConsentDialogOpen(false);
+    queueMicrotask(() => returnFocus?.focus());
+  }
+
+  function handleConsentKeyDown(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeConsentDialog("cancelled");
+      return;
+    }
+    if (event.key !== "Tab" || !consentDialog) return;
+    const focusable = [...consentDialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  async function startReview() {
+    const project = props.project;
+    const preview = contextPreview();
+    const selection = reviewSelection();
+    const provider = selectedProvider();
+    const modelId = model().trim();
+    const approvedScopeKey = scopeKey();
+    if (!project || !preview?.graphSnapshotId || !selection || !modelId || reviewRunning()) return;
+
+    const request = {
+      projectPath: project.path,
+      previewId: preview.previewId,
+      snapshotId: preview.graphSnapshotId,
+      selection,
+      provider,
+      model: modelId,
+    };
+    setConsentDialogOpen(false);
+    setConsentDecision("approved");
+    setReviewRunning(true);
+    setReviewError(null);
+    setReviewNotice(null);
+    setReviewMetadata(null);
+    try {
+      await approveReviewTransfer(request);
+      if (approvedScopeKey !== scopeKey()) {
+        setReviewNotice("선택 범위가 바뀌어 외부 요청을 시작하지 않았습니다. 새 문맥을 미리보기 하세요.");
+        return;
+      }
+      const response = await runAiReview(request);
+      if (approvedScopeKey !== scopeKey() || props.project?.path !== project.path) return;
+      setActiveSession(response.session);
+      setSelectedSessionId(response.session.sessionId);
+      setReviewMetadata(`${response.providerId} · ${response.model} · 입력 ${response.usage.inputTokens ?? "?"} / 출력 ${response.usage.outputTokens ?? "?"} tokens`);
+      setReviewNotice("검토 결과와 초기 finding 결정을 저장했습니다.");
+      const items = await listReviewSessions(project.path);
+      if (props.project?.path === project.path) setSessions(items);
+    } catch (cause: unknown) {
+      if (approvedScopeKey === scopeKey() && props.project?.path === project.path) {
+        const commandError = toAppCommandError(cause);
+        if (commandError.code === "cancelled") {
+          setReviewNotice("검토가 취소되었습니다. 결과는 저장되지 않았습니다.");
+        } else {
+          setReviewError(commandError.message);
+        }
+        setConsentDecision(null);
+      }
+    } finally {
+      setReviewRunning(false);
+      queueMicrotask(() => returnFocus?.focus());
+    }
+  }
+
+  async function decideFinding(findingId: string, status: "approved" | "rejected") {
+    const projectPath = props.project?.path;
+    const session = activeSession();
+    if (!projectPath || !session || session.validationState === "invalid") return;
+    const decisionKey = `${session.sessionId}:${findingId}`;
+    if (savingDecisionKeys().includes(decisionKey)) return;
+    setSavingDecisionKeys((current) => [...current, decisionKey]);
+    setSessionError(null);
+    try {
+      const decision = await persistFindingDecision(projectPath, session.sessionId, findingId, status);
+      setActiveSession((current) => current?.sessionId !== session.sessionId ? current : {
+        ...current,
+        findings: current.findings.map((item) => item.findingId === findingId ? { ...item, decision } : item),
+      });
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setSavingDecisionKeys((current) => current.filter((key) => key !== decisionKey));
     }
   }
 
@@ -253,8 +451,22 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         <span class="transfer-shield" aria-hidden="true">!</span>
         <div>
           <h2 id="transfer-note-title">외부 전송 동의</h2>
-          <p>외부 요청 기능은 아직 연결되지 않았습니다. 현재는 제공자와 구성된 문맥을 미리 본 뒤 명시적으로 동의하거나 거부할 수 있습니다.</p>
-          <strong>현재 앱은 외부 요청을 보내지 않습니다. 동의는 이번 화면에서만 유지되며 저장되지 않습니다.</strong>
+          <p>검토를 시작하면 미리 본 문맥이 선택한 외부 AI 제공자에게 전송됩니다. 요청마다 전송 범위와 모델을 확인하고 동의해야 합니다.</p>
+          <strong>API 키는 운영체제 자격 증명 저장소에 보관하며, 리뷰 세션에는 전체 문맥을 저장하지 않습니다.</strong>
+        </div>
+        <div class="review-model-field">
+          <label for="review-model">모델 ID</label>
+          <input
+            id="review-model"
+            type="text"
+            value={model()}
+            maxlength={128}
+            autocomplete="off"
+            spellcheck={false}
+            placeholder="제공자가 지원하는 모델 ID"
+            onInput={(event) => setModel(event.currentTarget.value)}
+          />
+          <span>모델 ID는 제공자에서 발급한 값을 입력하세요.</span>
         </div>
       </section>
 
@@ -300,7 +512,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
           {(preview) => <>
             <div class="context-preview-toolbar">
               <strong>실제 구성 문맥</strong>
-              <button class="primary-button" type="button" disabled={!activeCredential()?.configured} onClick={() => { setConsentDecision(null); setConsentDialogOpen(true); }}>이 문맥으로 동의 검토</button>
+              <button class="primary-button" type="button" disabled={!activeCredential()?.configured || !preview().graphSnapshotId || !model().trim()} onClick={openConsentDialog}>검토 시작 전 동의 확인</button>
             </div>
             <pre class="context-preview-body">{preview().context}</pre>
             <Show when={preview().omittedItems.length > 0}>
@@ -311,23 +523,113 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         <Show when={consentDecision()}>
           <p class="credential-notice" role="status">
             {consentDecision() === "approved"
-              ? "이번 전송 범위에 동의했습니다. 현재 외부 요청 기능은 연결되지 않아 데이터가 전송되지 않았습니다."
+              ? "이번 전송 범위에 동의했습니다. 검토 결과가 로컬 SQLite에 저장됩니다."
               : consentDecision() === "rejected"
                 ? "전송을 거부했습니다. 이 범위로 외부 요청을 보내지 않습니다."
                 : "동의를 취소했습니다. 이 범위로 외부 요청을 보내지 않습니다."}
           </p>
+        </Show>
+        <Show when={reviewRunning()}>
+          <div class="review-progress" role="status" aria-live="polite">
+            <span>선택한 문맥을 제공자에게 보내 리뷰를 진행하고 있습니다.</span>
+            <button class="secondary-button" type="button" onClick={() => { props.onCancelTask(); setReviewNotice("검토 취소를 요청했습니다."); }}>검토 취소</button>
+          </div>
+        </Show>
+        <Show when={reviewError()}><p class="inline-error" role="alert">{reviewError()}</p></Show>
+        <Show when={reviewNotice()}><p class="credential-notice" role="status">{reviewNotice()}</p></Show>
+      </section>
+
+      <section class="ai-settings-card review-history" aria-labelledby="review-history-title">
+        <div class="ai-settings-heading">
+          <div>
+            <h2 id="review-history-title">저장된 리뷰</h2>
+            <p>검증된 finding과 사용자 결정을 로컬에서 다시 불러옵니다.</p>
+          </div>
+        </div>
+        <Show when={sessionLoading()}><p role="status">리뷰 목록을 불러오는 중입니다…</p></Show>
+        <Show when={sessionError()}><p class="inline-error" role="alert">{sessionError()}</p></Show>
+        <Show when={sessions().length > 0}>
+          <label for="saved-review-session">리뷰 세션</label>
+          <select id="saved-review-session" value={selectedSessionId()} onChange={(event) => void loadSession(event.currentTarget.value)}>
+            <option value="">세션 선택</option>
+            {sessions().map((session) => <option value={session.sessionId}>{new Date(session.createdAtUnixMs).toLocaleString()} · {session.validationState} · {session.findingCount}개 finding</option>)}
+          </select>
+        </Show>
+        <Show when={!sessionLoading() && !sessionError() && sessions().length === 0}>
+          <p class="muted-message">저장된 리뷰가 없습니다. 미리보기를 확인하고 리뷰를 시작하세요.</p>
+        </Show>
+        <Show when={activeSession()}>
+          {(session) => <div class="review-results" aria-labelledby="review-results-title">
+            <div class="review-results-heading">
+              <div>
+                <h3 id="review-results-title">리뷰 결과</h3>
+                <p>스냅샷 {session().snapshotId} · {new Date(session().createdAtUnixMs).toLocaleString()}</p>
+              </div>
+              <span class={`review-state review-state-${reviewOutcomeState(session().validationState, session().findings.length)}`}>
+                {reviewOutcomeLabel(reviewOutcomeState(session().validationState, session().findings.length))}
+              </span>
+            </div>
+            <Show when={reviewMetadata()}><p class="muted-message">{reviewMetadata()}</p></Show>
+            <Show when={session().diagnostics.length > 0}>
+              <ul class="review-diagnostics" aria-label="검토 진단">
+                {session().diagnostics.map((diagnostic) => <li>{diagnostic.message}</li>)}
+              </ul>
+            </Show>
+            <Show when={session().findings.length === 0}>
+              <p class="muted-message">검증된 finding이 없습니다.</p>
+            </Show>
+            <div class="review-finding-list">
+              {session().findings.map((finding) => {
+                const result = finding.finding;
+                const decision = finding.decision;
+                const decisionKey = `${session().sessionId}:${finding.findingId}`;
+                const saving = savingDecisionKeys().includes(decisionKey);
+                return <article class="review-finding-card" aria-labelledby={`finding-${finding.findingId}`}>
+                  <div class="review-finding-heading">
+                    <h4 id={`finding-${finding.findingId}`}>{result.title}</h4>
+                    <div class="review-finding-badges">
+                      <span class={`severity severity-${result.severity}`}>{result.severity}</span>
+                      <span>{result.confidence} 신뢰도</span>
+                    </div>
+                  </div>
+                  <p>{result.description}</p>
+                  <dl class="review-finding-meta">
+                    <div><dt>분류</dt><dd>{result.category}</dd></div>
+                    {result.evidence.map((evidence, index) => <div>
+                      <dt>근거 {index + 1}</dt>
+                      <dd>
+                        <span>{evidence.relativePath}:{evidence.startLine}:{evidence.startColumn}–{evidence.endLine}:{evidence.endColumn}</span>
+                        <blockquote class="finding-evidence">{evidence.excerpt}</blockquote>
+                      </dd>
+                    </div>)}
+                  </dl>
+                  <Show when={result.affectedSymbols.length > 0}><p><strong>관련 심볼:</strong> {result.affectedSymbols.join(", ")}</p></Show>
+                  <Show when={result.suggestion}><p><strong>제안:</strong> {result.suggestion}</p></Show>
+                  <Show when={result.testSuggestion}><p><strong>검증 제안:</strong> {result.testSuggestion}</p></Show>
+                  <div class="finding-decision-row">
+                    <span role="status">사용자 결정: {findingDecisionLabel(decision.status)}{decision.decidedAtUnixMs ? ` · ${new Date(decision.decidedAtUnixMs).toLocaleString()}` : ""}</span>
+                    <div role="group" aria-label={`${result.title} 결정`}>
+                      <button class="secondary-button" type="button" disabled={saving || session().validationState === "invalid"} aria-pressed={decision.status === "approved"} onClick={() => void decideFinding(finding.findingId, "approved")}>{saving ? "저장 중…" : "승인"}</button>
+                      <button class="secondary-button" type="button" disabled={saving || session().validationState === "invalid"} aria-pressed={decision.status === "rejected"} onClick={() => void decideFinding(finding.findingId, "rejected")}>{saving ? "저장 중…" : "거절"}</button>
+                    </div>
+                  </div>
+                </article>;
+              })}
+            </div>
+          </div>}
         </Show>
       </section>
 
       <Show when={consentDialogOpen() && contextPreview()}>
         {(preview) => (
           <div class="consent-backdrop">
-            <section class="consent-dialog" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+            <section ref={consentDialog} class="consent-dialog" role="dialog" aria-modal="true" aria-labelledby="consent-title" aria-describedby="consent-description" onKeyDown={handleConsentKeyDown}>
               <p class="eyebrow">EXTERNAL TRANSFER REVIEW</p>
               <h2 id="consent-title">외부 전송 범위를 확인하세요</h2>
-              <p class="consent-intro">아래 범위가 제공자에게 전달될 수 있습니다. 전송은 사용자가 동의한 경우에만 허용됩니다.</p>
+              <p id="consent-description" class="consent-intro">동의하면 아래 미리보기 문맥이 선택한 제공자에게 한 번 전송됩니다. API 키는 전송 문맥이나 리뷰 기록에 포함되지 않습니다.</p>
               <dl class="transfer-scope-summary consent-summary">
                 <div><dt>제공자</dt><dd>{providers.find((item) => item.id === selectedProvider())?.label}</dd></div>
+                <div><dt>모델</dt><dd>{model().trim()}</dd></div>
                 <div><dt>프로젝트</dt><dd>{props.project?.name}</dd></div>
                 <div><dt>선택 범위</dt><dd>{scopeLabel()}</dd></div>
                 <div><dt>포함 파일</dt><dd>{preview().includedFiles.join(", ")}</dd></div>
@@ -335,11 +637,11 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                 <div><dt>생략</dt><dd>{preview().omittedItems.length ? preview().omittedItems.join("; ") : "없음"}</dd></div>
               </dl>
               <pre class="context-preview-body consent-context-preview">{preview().context}</pre>
-              <p class="consent-warning">이 동의는 사용자 검토 기록일 뿐, 실제 요청 기능은 아직 연결되지 않았습니다. 현재 버전은 외부로 데이터를 보내지 않으며 결정도 저장하거나 재사용하지 않습니다.</p>
+              <p class="consent-warning">요청은 선택한 외부 AI 제공자에게 전송됩니다. 검토 결과와 각 finding의 승인·거절 결정은 이 기기의 SQLite에 저장됩니다.</p>
               <div class="consent-actions">
-                <button class="secondary-button" type="button" onClick={() => { setConsentDecision("cancelled"); setConsentDialogOpen(false); }}>취소</button>
-                <button class="secondary-button" type="button" onClick={() => { setConsentDecision("rejected"); setConsentDialogOpen(false); }}>거부</button>
-                <button class="primary-button" type="button" onClick={() => { setConsentDecision("approved"); setConsentDialogOpen(false); }}>동의</button>
+                <button class="secondary-button" type="button" onClick={() => closeConsentDialog("cancelled")}>취소</button>
+                <button class="secondary-button" type="button" onClick={() => closeConsentDialog("rejected")}>거부</button>
+                <button class="primary-button" type="button" disabled={!model().trim() || model().trim().length > 128 || !preview().graphSnapshotId || reviewRunning()} onClick={() => void startReview()}>동의하고 리뷰 요청</button>
               </div>
             </section>
           </div>

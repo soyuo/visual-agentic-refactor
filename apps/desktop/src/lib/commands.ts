@@ -178,7 +178,6 @@ export interface ApproveReviewTransferRequest {
 }
 
 export interface RunAiReviewRequest extends ApproveReviewTransferRequest {
-  model: string;
 }
 
 export interface ProviderUsage {

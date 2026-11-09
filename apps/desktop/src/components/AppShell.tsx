@@ -213,6 +213,7 @@ function AppShell(props: AppShellProps) {
             selectedEntry={props.selectedEntry}
             graphSnapshot={props.graphSnapshot}
             selectedGraphNodeId={selectedGraphNodeId()}
+            onCancelTask={props.onCancelTask}
           />
         ) : <>
         <div class="content-heading">
