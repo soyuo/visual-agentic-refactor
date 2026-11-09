@@ -1,7 +1,9 @@
+import { createSignal } from "solid-js";
 import type {
   DetectionResult,
   DetectionStatus,
   GitStatusResponse,
+  GraphSnapshot,
   OpenProjectResponse,
   ScanEntry,
   ScanFileStatus,
@@ -9,6 +11,7 @@ import type {
   TaskProgressEvent,
 } from "../lib/commands";
 import FileTree from "./FileTree";
+import GraphExplorer from "./GraphExplorer";
 
 export type CoreStatus =
   | { kind: "loading" }
@@ -42,11 +45,19 @@ interface AppShellProps {
   onRescanProject: () => void;
   onRefreshGitStatus: () => void;
   onSelectEntry: (entry: ScanEntry) => void;
+  graphSnapshot: GraphSnapshot | null;
+  isGraphLoading: boolean;
+  graphError: string | null;
+  onAnalyzeGraph: () => void;
+  onGraphViewSelected: () => void;
+  onOpenGraphSource: (relativePath: string, line: number | null) => void;
+  revealPath: string | null;
+  graphSourceLocation: { relativePath: string; line: number | null } | null;
 }
 
 const navigationItems = [
   { label: "프로젝트 탐색", number: "01", active: true },
-  { label: "코드 그래프", number: "02", phase: "준비 중" },
+  { label: "코드 그래프", number: "02", active: true },
   { label: "API 목록", number: "03", phase: "준비 중" },
   { label: "AI 리뷰", number: "04", phase: "준비 중" },
   { label: "수정 및 검증", number: "05", phase: "준비 중" },
@@ -102,6 +113,7 @@ function getGitStatusLabel(status: GitStatusResponse["state"]): string {
 }
 
 function AppShell(props: AppShellProps) {
+  const [activeView, setActiveView] = createSignal<"project" | "graph">("project");
   const detectionRows = () => {
     const detection = props.scanResult?.projectDetection;
     if (!detection) return [];
@@ -125,7 +137,7 @@ function AppShell(props: AppShellProps) {
   };
 
   return (
-    <div class="app-shell">
+    <div class="app-shell" classList={{ "graph-mode": activeView() === "graph" }}>
       <header class="topbar">
         <div class="topbar-brand">
           <div class="brand-mark" aria-hidden="true">V</div>
@@ -148,10 +160,17 @@ function AppShell(props: AppShellProps) {
           {navigationItems.map((item) => (
             <button
               class="navigation-item"
-              classList={{ active: item.active }}
+              classList={{ active: item.active && activeView() === "project" || item.label === "코드 그래프" && activeView() === "graph" }}
               type="button"
               disabled={!item.active}
-              aria-current={item.active ? "page" : undefined}
+              aria-current={item.label === "코드 그래프" && activeView() === "graph" || item.label === "프로젝트 탐색" && activeView() === "project" ? "page" : undefined}
+              onClick={() => {
+                if (item.label === "프로젝트 탐색") setActiveView("project");
+                if (item.label === "코드 그래프") {
+                  setActiveView("graph");
+                  props.onGraphViewSelected();
+                }
+              }}
               title={item.active ? undefined : "아직 제공되지 않는 화면입니다."}
             >
               <span class="navigation-number">{item.number}</span>
@@ -172,6 +191,19 @@ function AppShell(props: AppShellProps) {
       </aside>
 
       <main class="content-area">
+        {activeView() === "graph" ? (
+          <GraphExplorer
+            snapshot={props.graphSnapshot}
+            loading={props.isGraphLoading}
+            error={props.graphError}
+            projectAvailable={props.project !== null}
+            onAnalyze={props.onAnalyzeGraph}
+            onOpenSource={(relativePath, line) => {
+              setActiveView("project");
+              props.onOpenGraphSource(relativePath, line);
+            }}
+          />
+        ) : <>
         <div class="content-heading">
           <div>
             <p class="eyebrow">PROJECT WORKSPACE</p>
@@ -368,11 +400,20 @@ function AppShell(props: AppShellProps) {
                   </div>
                 )}
                 {props.scanResult.entries.length > 0 ? (
-                  <FileTree
-                    entries={props.scanResult.entries}
-                    selectedPath={props.selectedEntry?.relativePath ?? null}
-                    onSelect={props.onSelectEntry}
-                  />
+                  <>
+                    {props.graphSourceLocation && (
+                      <p class="graph-source-selection" role="status">
+                        그래프 근거 위치: {props.graphSourceLocation.relativePath}
+                        {props.graphSourceLocation.line !== null && `:${props.graphSourceLocation.line}`}
+                      </p>
+                    )}
+                    <FileTree
+                      entries={props.scanResult.entries}
+                      selectedPath={props.selectedEntry?.relativePath ?? null}
+                      revealPath={props.revealPath}
+                      onSelect={props.onSelectEntry}
+                    />
+                  </>
                 ) : (
                   <div class="scan-empty-state" role="status">
                     <span aria-hidden="true">⌕</span>
@@ -439,9 +480,10 @@ function AppShell(props: AppShellProps) {
           <span class="footnote-dot" />
           파일 분석은 선택한 프로젝트 범위에서 로컬로 수행됩니다.
         </div>
+        </>}
       </main>
 
-      <aside class="details-panel" aria-label="상세 정보">
+      {activeView() === "project" && <aside class="details-panel" aria-label="상세 정보">
         <div class="details-heading">
           <div>
             <p class="eyebrow">INSPECTOR</p>
@@ -578,7 +620,7 @@ function AppShell(props: AppShellProps) {
           <span class="footer-shield" aria-hidden="true">✓</span>
           <span>파일 접근은 사용자가 선택한 범위로 제한됩니다.</span>
         </div>
-      </aside>
+      </aside>}
     </div>
   );
 }

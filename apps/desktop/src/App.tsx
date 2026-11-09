@@ -5,18 +5,22 @@ import AppShell, {
   type TaskUiState,
 } from "./components/AppShell";
 import {
+  analyzeSpringProject,
   cancelTask,
+  getGraphSnapshot,
   getLastProject,
   getGitStatus,
   getAppInfo,
   openProject,
   scanProject,
   listenToTaskProgress,
+  listGraphSnapshots,
   toAppCommandError,
 } from "./lib/commands";
 import { selectProjectFolder } from "./lib/projectPicker";
 import type {
   GitStatusResponse,
+  GraphSnapshot,
   OpenProjectResponse,
   ScanEntry,
   ScanProjectResponse,
@@ -31,12 +35,18 @@ function App() {
   const [gitStatusError, setGitStatusError] = createSignal<string | null>(null);
   const [isGitStatusLoading, setIsGitStatusLoading] = createSignal(false);
   const [selectedEntry, setSelectedEntry] = createSignal<ScanEntry | null>(null);
+  const [graphSnapshot, setGraphSnapshot] = createSignal<GraphSnapshot | null>(null);
+  const [isGraphLoading, setIsGraphLoading] = createSignal(false);
+  const [graphError, setGraphError] = createSignal<string | null>(null);
+  const [revealPath, setRevealPath] = createSignal<string | null>(null);
+  const [graphSourceLocation, setGraphSourceLocation] = createSignal<{ relativePath: string; line: number | null } | null>(null);
   const [scanStatus, setScanStatus] = createSignal<"idle" | "scanning" | "complete" | "cancelled" | "error">("idle");
   const [scanMessage, setScanMessage] = createSignal<string | null>(null);
   const [isScanning, setIsScanning] = createSignal(false);
   const [isOpeningProject, setIsOpeningProject] = createSignal(false);
   const [projectError, setProjectError] = createSignal<string | null>(null);
   let gitStatusRequestId = 0;
+  let graphRequestId = 0;
 
   onMount(() => {
     void getAppInfo()
@@ -89,6 +99,11 @@ function App() {
       if (!savedProject) return;
 
       const openedProject = await openProject(savedProject.path);
+      graphRequestId += 1;
+      setGraphSnapshot(null);
+      setGraphSourceLocation(null);
+      setIsGraphLoading(false);
+      setGraphError(null);
       setProject(openedProject);
       setProjectError(openedProject.persistenceError);
       await scanOpenedProject(openedProject.path);
@@ -129,6 +144,11 @@ function App() {
       if (selectedPath === null) return;
 
       const openedProject = await openProject(selectedPath);
+      graphRequestId += 1;
+      setGraphSnapshot(null);
+      setGraphSourceLocation(null);
+      setIsGraphLoading(false);
+      setGraphError(null);
       setProject(openedProject);
       setProjectError(openedProject.persistenceError);
       setScanResult(null);
@@ -189,6 +209,59 @@ function App() {
     if (currentProject) void scanOpenedProject(currentProject.path);
   }
 
+  async function loadLatestGraph() {
+    const currentProject = project();
+    const requestId = ++graphRequestId;
+    if (!currentProject) {
+      setGraphSnapshot(null);
+      setGraphError(null);
+      setIsGraphLoading(false);
+      return;
+    }
+
+    setIsGraphLoading(true);
+    setGraphError(null);
+    try {
+      const snapshots = await listGraphSnapshots(currentProject.path);
+      const latest = snapshots[0];
+      const snapshot = latest
+        ? await getGraphSnapshot(currentProject.path, latest.snapshotId)
+        : null;
+      if (requestId === graphRequestId) setGraphSnapshot(snapshot);
+    } catch (error: unknown) {
+      if (requestId === graphRequestId) setGraphError(toAppCommandError(error).message);
+    } finally {
+      if (requestId === graphRequestId) setIsGraphLoading(false);
+    }
+  }
+
+  async function handleAnalyzeGraph() {
+    const currentProject = project();
+    if (!currentProject || isGraphLoading()) return;
+
+    const requestId = ++graphRequestId;
+    setIsGraphLoading(true);
+    setGraphError(null);
+    try {
+      const result = await analyzeSpringProject({ path: currentProject.path });
+      const snapshot = await getGraphSnapshot(currentProject.path, result.snapshotId);
+      if (!snapshot) throw new Error("분석 결과 그래프를 불러오지 못했습니다.");
+      if (requestId === graphRequestId) setGraphSnapshot(snapshot);
+    } catch (error: unknown) {
+      if (requestId === graphRequestId) setGraphError(toAppCommandError(error).message);
+    } finally {
+      if (requestId === graphRequestId) setIsGraphLoading(false);
+    }
+  }
+
+  function handleOpenGraphSource(relativePath: string, line: number | null) {
+    const entry = scanResult()?.entries.find((item) => item.relativePath === relativePath) ?? null;
+    setSelectedEntry(entry);
+    setGraphSourceLocation({ relativePath, line });
+    setRevealPath(null);
+    queueMicrotask(() => setRevealPath(relativePath));
+  }
+
   const getCoreStatusMessage = () => {
     const status = coreStatus();
     return status.kind === "loading" ? "데스크톱 코어 연결 중…" : status.message;
@@ -218,6 +291,14 @@ function App() {
         const currentProject = project();
         if (currentProject) void refreshGitStatus(currentProject.path);
       }}
+      graphSnapshot={graphSnapshot()}
+      isGraphLoading={isGraphLoading()}
+      graphError={graphError()}
+      onAnalyzeGraph={() => void handleAnalyzeGraph()}
+      onGraphViewSelected={() => void loadLatestGraph()}
+      onOpenGraphSource={handleOpenGraphSource}
+      revealPath={revealPath()}
+      graphSourceLocation={graphSourceLocation()}
     />
   );
 }

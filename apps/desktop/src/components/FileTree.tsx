@@ -22,6 +22,7 @@ interface VisibleTreeNode {
 interface FileTreeProps {
   entries: ScanEntry[];
   selectedPath: string | null;
+  revealPath: string | null;
   onSelect: (entry: ScanEntry) => void;
 }
 
@@ -151,6 +152,32 @@ function FileTree(props: FileTreeProps) {
     setScrollTop(viewport.scrollTop);
     requestAnimationFrame(() => rowRefs.get(next.entry.relativePath)?.focus());
   }
+
+  let lastRevealedPath: string | null = null;
+  createEffect(() => {
+    const path = props.revealPath;
+    if (!path) {
+      lastRevealedPath = null;
+      return;
+    }
+    if (path === lastRevealedPath) return;
+    lastRevealedPath = path;
+
+    const segments = path.split("/");
+    const ancestors = new Set<string>();
+    let current = "";
+    for (const segment of segments.slice(0, -1)) {
+      current = current ? `${current}/${segment}` : segment;
+      if (props.entries.some((entry) => entry.relativePath === current && entry.kind === "directory")) {
+        ancestors.add(current);
+      }
+    }
+    setExpandedPaths((existing) => new Set([...existing, ...ancestors]));
+    queueMicrotask(() => {
+      const index = visibleNodes().findIndex((node) => node.entry.relativePath === path);
+      if (index >= 0) focusNode(index);
+    });
+  });
 
   function handleKeyDown(event: KeyboardEvent, node: VisibleTreeNode, index: number) {
     const isDirectory = node.entry.kind === "directory";
