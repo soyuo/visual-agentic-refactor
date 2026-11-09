@@ -9,6 +9,7 @@ pub mod kotlin;
 pub mod persistence;
 pub mod project_detection;
 pub mod scanner;
+pub mod spring;
 pub mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
