@@ -2,7 +2,7 @@ import type { GraphEdge, GraphNode, GraphNodeType, GraphSnapshot } from "./comma
 
 export type GraphViewKind = "architecture" | "api" | "dependencies" | "flow";
 
-export const MAX_VISIBLE_GRAPH_NODES = 120;
+export const MAX_VISIBLE_GRAPH_NODES = 60;
 export const MAX_VISIBLE_GRAPH_EDGES = 300;
 
 const edgeTypes: Record<GraphViewKind, ReadonlySet<GraphEdge["edgeType"]>> = {
