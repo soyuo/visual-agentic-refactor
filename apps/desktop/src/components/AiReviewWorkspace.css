@@ -1,0 +1,262 @@
+.ai-review-workspace {
+  width: min(100%, 980px);
+  margin: 0 auto;
+}
+
+.ai-settings-card,
+.ai-transfer-note {
+  border: 1px solid #e7ebf3;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 28px rgb(40 54 93 / 4%);
+}
+
+.ai-settings-card {
+  padding: 24px;
+}
+
+.ai-settings-heading,
+.credential-provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ai-settings-heading h2,
+.ai-transfer-note h2 {
+  margin: 0;
+  color: #202a3c;
+  font-size: 16px;
+}
+
+.ai-settings-heading p,
+.ai-transfer-note p {
+  margin: 5px 0 0;
+  color: #788399;
+  font-size: 12px;
+}
+
+.credential-provider-list {
+  margin: 20px 0;
+  border-top: 1px solid #edf0f5;
+}
+
+.credential-provider-row {
+  min-height: 64px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.credential-provider-row > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.credential-provider-row strong {
+  min-width: 88px;
+  color: #303b51;
+  font-size: 13px;
+}
+
+.credential-provider-row span {
+  color: #8992a3;
+  font-size: 12px;
+}
+
+.credential-provider-row .credential-configured {
+  color: #27805c;
+}
+
+.credential-form {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.credential-form label {
+  color: #58647a;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.credential-form select,
+.credential-form input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 11px;
+  border: 1px solid #dce2ed;
+  border-radius: 8px;
+  background: #fff;
+  color: #28344a;
+  font: inherit;
+}
+
+.credential-form input {
+  grid-column: 2;
+}
+
+.credential-form button {
+  grid-column: 2;
+  justify-self: start;
+  white-space: nowrap;
+}
+
+.credential-form select {
+  grid-column: 2;
+}
+
+.credential-notice {
+  margin: 14px 0 0;
+  color: #27805c;
+  font-size: 12px;
+}
+
+.muted-message {
+  color: #8992a3;
+  font-size: 12px;
+}
+
+.text-button {
+  border: 0;
+  background: transparent;
+  color: #53627b;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.danger-text {
+  color: #b64b53;
+}
+
+.text-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.ai-transfer-note {
+  display: flex;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 19px 21px;
+  border-color: #e9e5d8;
+  background: #fffdf7;
+}
+
+.transfer-shield {
+  display: grid;
+  flex: 0 0 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 9px;
+  background: #f5edd4;
+  color: #98752b;
+  font-weight: 750;
+}
+
+.ai-transfer-note strong {
+  display: block;
+  margin-top: 9px;
+  color: #6a5a2d;
+  font-size: 12px;
+}
+
+.transfer-scope-card {
+  margin-top: 18px;
+}
+
+.transfer-scope-summary {
+  display: grid;
+  gap: 0;
+  margin: 20px 0 0;
+  border-top: 1px solid #edf0f5;
+}
+
+.transfer-scope-summary > div {
+  display: grid;
+  grid-template-columns: 126px minmax(0, 1fr);
+  gap: 14px;
+  padding: 11px 0;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.transfer-scope-summary dt {
+  color: #7d879a;
+  font-size: 12px;
+}
+
+.transfer-scope-summary dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: #354057;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.consent-backdrop {
+  position: fixed;
+  z-index: 10;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(25 34 53 / 46%);
+}
+
+.consent-dialog {
+  width: min(100%, 580px);
+  max-height: min(90vh, 760px);
+  overflow-y: auto;
+  padding: 26px;
+  border: 1px solid #e5e9f1;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgb(16 25 44 / 22%);
+}
+
+.consent-dialog h2 {
+  margin: 0;
+  color: #202a3c;
+  font-size: 20px;
+}
+
+.consent-intro,
+.consent-warning {
+  color: #69758b;
+  font-size: 12px;
+}
+
+.consent-summary {
+  margin-top: 18px;
+}
+
+.consent-warning {
+  margin-top: 17px;
+  padding: 12px 13px;
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #725c25;
+  line-height: 1.65;
+}
+
+.consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 21px;
+}
+
+.transfer-scope-card > .primary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .credential-form {
+    grid-template-columns: minmax(100px, 130px) minmax(0, 1fr);
+  }
+}

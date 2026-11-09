@@ -12,6 +12,7 @@ import type {
 } from "../lib/commands";
 import FileTree from "./FileTree";
 import GraphExplorer from "./GraphExplorer";
+import AiReviewWorkspace from "./AiReviewWorkspace";
 
 export type CoreStatus =
   | { kind: "loading" }
@@ -59,7 +60,7 @@ const navigationItems = [
   { label: "프로젝트 탐색", number: "01", active: true },
   { label: "코드 그래프", number: "02", active: true },
   { label: "API 목록", number: "03", phase: "준비 중" },
-  { label: "AI 리뷰", number: "04", phase: "준비 중" },
+  { label: "AI 리뷰", number: "04", active: true },
   { label: "수정 및 검증", number: "05", phase: "준비 중" },
 ];
 
@@ -113,7 +114,7 @@ function getGitStatusLabel(status: GitStatusResponse["state"]): string {
 }
 
 function AppShell(props: AppShellProps) {
-  const [activeView, setActiveView] = createSignal<"project" | "graph">("project");
+  const [activeView, setActiveView] = createSignal<"project" | "graph" | "review">("project");
   const detectionRows = () => {
     const detection = props.scanResult?.projectDetection;
     if (!detection) return [];
@@ -137,7 +138,7 @@ function AppShell(props: AppShellProps) {
   };
 
   return (
-    <div class="app-shell" classList={{ "graph-mode": activeView() === "graph" }}>
+    <div class="app-shell" classList={{ "graph-mode": activeView() !== "project" }}>
       <header class="topbar">
         <div class="topbar-brand">
           <div class="brand-mark" aria-hidden="true">V</div>
@@ -149,7 +150,7 @@ function AppShell(props: AppShellProps) {
         <div class="topbar-context">
           <span>작업 공간</span>
           <span class="breadcrumb-separator">/</span>
-          <strong>프로젝트 탐색</strong>
+          <strong>{activeView() === "review" ? "AI 리뷰" : activeView() === "graph" ? "코드 그래프" : "프로젝트 탐색"}</strong>
         </div>
         <div class="local-badge"><span /> 로컬 작업 공간</div>
       </header>
@@ -160,16 +161,17 @@ function AppShell(props: AppShellProps) {
           {navigationItems.map((item) => (
             <button
               class="navigation-item"
-              classList={{ active: item.active && activeView() === "project" || item.label === "코드 그래프" && activeView() === "graph" }}
+              classList={{ active: item.active && activeView() === "project" || item.label === "코드 그래프" && activeView() === "graph" || item.label === "AI 리뷰" && activeView() === "review" }}
               type="button"
               disabled={!item.active}
-              aria-current={item.label === "코드 그래프" && activeView() === "graph" || item.label === "프로젝트 탐색" && activeView() === "project" ? "page" : undefined}
+              aria-current={item.label === "코드 그래프" && activeView() === "graph" || item.label === "프로젝트 탐색" && activeView() === "project" || item.label === "AI 리뷰" && activeView() === "review" ? "page" : undefined}
               onClick={() => {
                 if (item.label === "프로젝트 탐색") setActiveView("project");
                 if (item.label === "코드 그래프") {
                   setActiveView("graph");
                   props.onGraphViewSelected();
                 }
+                if (item.label === "AI 리뷰") setActiveView("review");
               }}
               title={item.active ? undefined : "아직 제공되지 않는 화면입니다."}
             >
@@ -203,6 +205,8 @@ function AppShell(props: AppShellProps) {
               props.onOpenGraphSource(relativePath, line);
             }}
           />
+        ) : activeView() === "review" ? (
+          <AiReviewWorkspace project={props.project} selectedEntry={props.selectedEntry} />
         ) : <>
         <div class="content-heading">
           <div>

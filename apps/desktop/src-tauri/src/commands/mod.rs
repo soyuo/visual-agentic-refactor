@@ -1,4 +1,5 @@
 pub mod app;
+pub mod credentials;
 pub mod git;
 pub mod graph;
 pub mod project;
