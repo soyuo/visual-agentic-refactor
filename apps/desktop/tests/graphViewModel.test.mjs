@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildGraphViewModel,
+  MAX_VISIBLE_GRAPH_EDGES,
   MAX_VISIBLE_GRAPH_NODES,
   nextGraphNodeId,
 } from "../src/lib/graphViewModel.ts";
@@ -91,6 +92,20 @@ test("graph view caps rendered nodes and reports omitted results", () => {
 
   assert.equal(result.nodes.length, MAX_VISIBLE_GRAPH_NODES);
   assert.equal(result.omittedNodeCount, 3);
+});
+
+test("graph view caps rendered edges and reports omitted relationships", () => {
+  const edges = Array.from({ length: MAX_VISIBLE_GRAPH_EDGES + 5 }, (_, index) =>
+    edge(`relation-${index}`, "calls", "source", "target"),
+  );
+  const fixture = snapshot(
+    [node("source", "method", "loadItems"), node("target", "method", "findItems")],
+    edges,
+  );
+  const result = buildGraphViewModel(fixture, "flow");
+
+  assert.equal(result.edges.length, MAX_VISIBLE_GRAPH_EDGES);
+  assert.equal(result.omittedEdgeCount, 5);
 });
 
 test("keyboard node navigation wraps in both directions", () => {
