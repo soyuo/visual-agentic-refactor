@@ -1,3 +1,4 @@
+pub mod ai_review;
 pub mod app;
 pub mod context;
 pub mod credentials;

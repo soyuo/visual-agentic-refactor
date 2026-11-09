@@ -168,6 +168,24 @@ export interface ReviewContextPreview {
   tokenEstimateNote: string;
 }
 
+export interface ApproveReviewTransferRequest {
+  projectPath: string;
+  previewId: string;
+  snapshotId: string;
+  selection: ReviewFindingSelection;
+  provider: CredentialProvider;
+  model: string;
+}
+
+export interface RunAiReviewRequest extends ApproveReviewTransferRequest {
+  model: string;
+}
+
+export interface ProviderUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+
 export interface RenderedSourceSpan {
   relativePath: string;
   startLine: number;
@@ -265,6 +283,13 @@ export interface StoredReviewSession extends StoredReviewSessionSummary {
   projectPath: string;
   diagnostics: ReviewFindingValidationDiagnostic[];
   findings: StoredReviewFinding[];
+}
+
+export interface AiReviewResponse {
+  session: StoredReviewSession;
+  providerId: string;
+  model: string;
+  usage: ProviderUsage;
 }
 
 export type ReviewFindingSelection =
@@ -482,6 +507,24 @@ export async function previewReviewContext(
 ): Promise<ReviewContextPreview> {
   try {
     return await invoke<ReviewContextPreview>("preview_review_context", { request });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function approveReviewTransfer(
+  request: ApproveReviewTransferRequest,
+): Promise<void> {
+  try {
+    await invoke<void>("approve_review_transfer", { request });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function runAiReview(request: RunAiReviewRequest): Promise<AiReviewResponse> {
+  try {
+    return await invoke<AiReviewResponse>("run_ai_review", { request });
   } catch (error) {
     throw toAppCommandError(error);
   }

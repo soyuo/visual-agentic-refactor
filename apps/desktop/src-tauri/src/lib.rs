@@ -34,6 +34,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::app::get_app_info,
+            commands::ai_review::approve_review_transfer,
+            commands::ai_review::run_ai_review,
             commands::credentials::list_provider_credentials,
             commands::credentials::save_provider_credential,
             commands::credentials::delete_provider_credential,
