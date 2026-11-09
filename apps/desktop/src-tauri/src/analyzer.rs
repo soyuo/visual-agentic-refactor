@@ -1,10 +1,10 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Byte and text coordinates for a source span.
 ///
 /// Byte offsets are zero-based UTF-8 offsets with an exclusive end. Lines and
 /// columns are one-based; columns count Unicode scalar values within a line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceRange {
     pub relative_path: String,
@@ -22,7 +22,7 @@ pub struct SourceRange {
 #[serde(transparent)]
 pub struct SymbolId(pub String);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SourceLanguage {
     Kotlin,
@@ -68,7 +68,7 @@ pub struct AnalyzerInput<'a> {
     pub source: &'a str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Confidence {
     Confirmed,

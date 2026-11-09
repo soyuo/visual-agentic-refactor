@@ -8,12 +8,13 @@ use serde::Serialize;
 
 use crate::command_error::{CommandError, CommandErrorCode};
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
+const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.sql");
 
 #[derive(Clone)]
 pub struct ProjectDatabase {
-    connection: Arc<Mutex<Connection>>,
+    pub(crate) connection: Arc<Mutex<Connection>>,
 }
 
 pub struct PersistenceState {
@@ -240,17 +241,23 @@ fn checked_sqlite_integer(value: Option<u64>, label: &str) -> Result<Option<i64>
 }
 
 fn migrate(connection: &Connection) -> rusqlite::Result<()> {
-    let schema_version: i64 =
+    let mut schema_version: i64 =
         connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if schema_version > CURRENT_SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
 
-    if schema_version == 0 {
+    while schema_version < CURRENT_SCHEMA_VERSION {
+        let next_version = schema_version + 1;
         let transaction = connection.unchecked_transaction()?;
-        transaction.execute_batch(INITIAL_MIGRATION)?;
-        transaction.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+        match next_version {
+            1 => transaction.execute_batch(INITIAL_MIGRATION)?,
+            2 => transaction.execute_batch(GRAPH_MIGRATION)?,
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        }
+        transaction.pragma_update(None, "user_version", next_version)?;
         transaction.commit()?;
+        schema_version = next_version;
     }
 
     Ok(())
@@ -260,7 +267,9 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{ProjectDatabase, StoredFile, StoredProject};
+    use rusqlite::{Connection, OptionalExtension};
+
+    use super::{INITIAL_MIGRATION, ProjectDatabase, StoredFile, StoredProject};
 
     fn stored_file(relative_path: &str) -> StoredFile<'_> {
         StoredFile {
@@ -287,14 +296,102 @@ mod tests {
         let data_dir = temporary_database_dir();
 
         let first = ProjectDatabase::open(data_dir.clone()).expect("database should initialize");
-        assert_eq!(first.schema_version(), 1);
+        assert_eq!(first.schema_version(), 2);
         drop(first);
 
         let second = ProjectDatabase::open(data_dir.clone()).expect("database should reopen");
-        assert_eq!(second.schema_version(), 1);
+        assert_eq!(second.schema_version(), 2);
         drop(second);
 
         std::fs::remove_dir_all(data_dir).expect("temporary database directory should be removed");
+    }
+
+    #[test]
+    fn migrates_existing_project_and_file_rows_without_data_loss() {
+        let data_dir = temporary_database_dir();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let database_path = data_dir.join("projects.sqlite3");
+        let connection = Connection::open(&database_path).unwrap();
+        connection.execute_batch(INITIAL_MIGRATION).unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        connection
+            .execute(
+                "INSERT INTO projects (root_path, name, created_at_unix_ms, last_opened_at_unix_ms)
+                 VALUES ('C:/workspace/sample', 'sample', 10, 20)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO files (project_id, relative_path, name, kind)
+                 VALUES (1, 'src/Main.kt', 'Main.kt', 'file')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let database =
+            ProjectDatabase::open(data_dir.clone()).expect("v2 migration should succeed");
+        assert_eq!(database.schema_version(), 2);
+        let connection = database.connection.lock().unwrap();
+        let project_name: String = connection
+            .query_row("SELECT name FROM projects WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let file_path: String = connection
+            .query_row(
+                "SELECT relative_path FROM files WHERE project_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let graph_table_exists: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'graph_snapshots'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(project_name, "sample");
+        assert_eq!(file_path, "src/Main.kt");
+        assert_eq!(graph_table_exists.as_deref(), Some("graph_snapshots"));
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn failed_graph_migration_rolls_back_all_schema_changes() {
+        let data_dir = temporary_database_dir();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let database_path = data_dir.join("projects.sqlite3");
+        let connection = Connection::open(&database_path).unwrap();
+        connection.execute_batch(INITIAL_MIGRATION).unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        connection
+            .execute_batch("CREATE TABLE graph_nodes (conflicting INTEGER);")
+            .unwrap();
+        drop(connection);
+
+        assert!(ProjectDatabase::open(data_dir.clone()).is_err());
+        let connection = Connection::open(&database_path).unwrap();
+        let schema_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let graph_snapshots_exists: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'graph_snapshots'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(schema_version, 1);
+        assert_eq!(graph_snapshots_exists, None);
+        drop(connection);
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
