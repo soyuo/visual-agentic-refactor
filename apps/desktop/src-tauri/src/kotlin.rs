@@ -11,6 +11,7 @@ use crate::analyzer::{
 
 const MAX_SOURCE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_DIAGNOSTICS: usize = 256;
+const MAX_RELATIONSHIPS: usize = 50_000;
 
 pub struct KotlinAnalyzer;
 
@@ -41,13 +42,15 @@ impl Analyzer for KotlinAnalyzer {
                     Relationships,
                     SupportLevel::Partial,
                     Some(
-                        "Inheritance targets are reported by syntax; class/interface resolution is not performed.",
+                        "Call and inheritance targets are syntax candidates; overload, type, and dynamic-dispatch resolution is not performed.",
                     ),
                 ),
                 capability(
                     ControlFlow,
-                    SupportLevel::Unsupported,
-                    Some("Function-body control-flow analysis is not implemented."),
+                    SupportLevel::Partial,
+                    Some(
+                        "Conditional, loop, and exception constructs are reported as syntax candidates; a full control-flow graph is not built.",
+                    ),
                 ),
             ],
         }
@@ -167,6 +170,7 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
     }
 
     let mut overflowed_diagnostics = false;
+    let mut overflowed_relationships = false;
     while let Some((node, context)) = stack.pop() {
         if node.kind() == "import" {
             if let Some(import) = parse_import(input, node, &line_index) {
@@ -219,8 +223,22 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
 
         let mut child_context = context.clone();
         if let Some((symbol, symbol_context)) = make_symbol(input, &line_index, node, &context) {
-            add_annotations(input, &line_index, node, &symbol, &mut output);
-            add_inheritance(input, &line_index, node, &symbol, &mut output);
+            add_annotations(
+                input,
+                &line_index,
+                node,
+                &symbol,
+                &mut output,
+                &mut overflowed_relationships,
+            );
+            add_inheritance(
+                input,
+                &line_index,
+                node,
+                &symbol,
+                &mut output,
+                &mut overflowed_relationships,
+            );
             output.symbols.push(symbol);
             child_context.parent = Some(symbol_context.clone());
             if matches!(
@@ -231,6 +249,15 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
             }
         }
 
+        add_call_and_flow_relationships(
+            input,
+            &line_index,
+            node,
+            &context,
+            &mut output,
+            &mut overflowed_relationships,
+        );
+
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
         for child in children.into_iter().rev() {
@@ -238,6 +265,20 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
         }
     }
 
+    if overflowed_relationships {
+        push_diagnostic(
+            &mut output,
+            &mut overflowed_diagnostics,
+            AnalyzerDiagnostic {
+                code: DiagnosticCode::ResourceLimitReached,
+                severity: DiagnosticSeverity::Warning,
+                message: format!(
+                    "Only the first {MAX_RELATIONSHIPS} Kotlin relationships are reported."
+                ),
+                location: None,
+            },
+        );
+    }
     if overflowed_diagnostics {
         output.diagnostics.push(AnalyzerDiagnostic {
             code: DiagnosticCode::ResourceLimitReached,
@@ -352,6 +393,7 @@ fn add_annotations(
     declaration: Node<'_>,
     symbol: &AnalyzerSymbol,
     output: &mut AnalysisOutput,
+    overflowed_relationships: &mut bool,
 ) {
     let Some(modifiers) = find_child_by_kind(declaration, "modifiers") else {
         return;
@@ -360,14 +402,18 @@ fn add_annotations(
     while let Some(node) = stack.pop() {
         if node.kind() == "annotation" {
             if let Some(name) = annotation_name(node, input.source) {
-                output.relationships.push(AnalyzerRelationship {
-                    kind: RelationshipKind::AnnotatedBy,
-                    source_symbol_id: symbol.id.clone(),
-                    target_symbol_id: None,
-                    target_name: Some(name),
-                    location: source_range(input.relative_path, input.source, line_index, node),
-                    confidence: Confidence::Confirmed,
-                });
+                push_relationship(
+                    output,
+                    overflowed_relationships,
+                    AnalyzerRelationship {
+                        kind: RelationshipKind::AnnotatedBy,
+                        source_symbol_id: symbol.id.clone(),
+                        target_symbol_id: None,
+                        target_name: Some(name),
+                        location: source_range(input.relative_path, input.source, line_index, node),
+                        confidence: Confidence::Confirmed,
+                    },
+                );
             }
             continue;
         }
@@ -383,6 +429,7 @@ fn add_inheritance(
     declaration: Node<'_>,
     symbol: &AnalyzerSymbol,
     output: &mut AnalysisOutput,
+    overflowed_relationships: &mut bool,
 ) {
     if !matches!(
         declaration.kind(),
@@ -397,20 +444,158 @@ fn add_inheritance(
     while let Some(node) = stack.pop() {
         if node.kind() == "delegation_specifier" {
             if let Some(name) = delegation_target_name(node, input.source) {
-                output.relationships.push(AnalyzerRelationship {
-                    kind: RelationshipKind::Inherits,
-                    source_symbol_id: symbol.id.clone(),
-                    target_symbol_id: None,
-                    target_name: Some(name),
-                    location: source_range(input.relative_path, input.source, line_index, node),
-                    confidence: Confidence::Inferred,
-                });
+                push_relationship(
+                    output,
+                    overflowed_relationships,
+                    AnalyzerRelationship {
+                        kind: RelationshipKind::Inherits,
+                        source_symbol_id: symbol.id.clone(),
+                        target_symbol_id: None,
+                        target_name: Some(name),
+                        location: source_range(input.relative_path, input.source, line_index, node),
+                        confidence: Confidence::Inferred,
+                    },
+                );
             }
             continue;
         }
         let mut cursor = node.walk();
         let children: Vec<_> = node.named_children(&mut cursor).collect();
         stack.extend(children.into_iter().rev());
+    }
+}
+
+fn add_call_and_flow_relationships(
+    input: &AnalyzerInput<'_>,
+    line_index: &LineIndex,
+    node: Node<'_>,
+    context: &WalkContext,
+    output: &mut AnalysisOutput,
+    overflowed_relationships: &mut bool,
+) {
+    let Some(scope) = context.parent.as_ref().filter(|scope| {
+        matches!(
+            scope.kind,
+            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+        )
+    }) else {
+        return;
+    };
+    let recovered_finally = is_recovered_finally_call(node, input.source);
+    let (kind, target_name, confidence) = match node.kind() {
+        "call_expression" if recovered_finally => (
+            RelationshipKind::Controls,
+            Some("finally".into()),
+            Confidence::Inferred,
+        ),
+        "call_expression" | "constructor_delegation_call" => (
+            RelationshipKind::Calls,
+            first_named_child(node).map(|target| candidate_name(node_text(target, input.source))),
+            Confidence::Inferred,
+        ),
+        "if_expression" => (
+            RelationshipKind::Controls,
+            Some("if".into()),
+            Confidence::Confirmed,
+        ),
+        "when_expression" => (
+            RelationshipKind::Controls,
+            Some("when".into()),
+            Confidence::Confirmed,
+        ),
+        "for_statement" => (
+            RelationshipKind::Controls,
+            Some("for".into()),
+            Confidence::Confirmed,
+        ),
+        "while_statement" => (
+            RelationshipKind::Controls,
+            Some("while".into()),
+            Confidence::Confirmed,
+        ),
+        "do_while_statement" => (
+            RelationshipKind::Controls,
+            Some("do-while".into()),
+            Confidence::Confirmed,
+        ),
+        "try_expression" => (
+            RelationshipKind::Controls,
+            Some("try".into()),
+            Confidence::Confirmed,
+        ),
+        "catch_block" => (
+            RelationshipKind::Controls,
+            Some("catch".into()),
+            Confidence::Confirmed,
+        ),
+        "finally_block" => (
+            RelationshipKind::Controls,
+            Some("finally".into()),
+            Confidence::Confirmed,
+        ),
+        "throw_expression" => (
+            RelationshipKind::Throws,
+            first_named_child(node).map(|target| candidate_name(node_text(target, input.source))),
+            Confidence::Inferred,
+        ),
+        _ => return,
+    };
+
+    push_relationship(
+        output,
+        overflowed_relationships,
+        AnalyzerRelationship {
+            kind,
+            source_symbol_id: scope.id.clone(),
+            target_symbol_id: None,
+            target_name,
+            location: source_range(input.relative_path, input.source, line_index, node),
+            confidence,
+        },
+    );
+}
+
+fn is_recovered_finally_call(node: Node<'_>, source: &str) -> bool {
+    // tree-sitter-kotlin-ng recovers a finally clause as a trailing-lambda call.
+    node.kind() == "call_expression"
+        && first_named_child(node)
+            .is_some_and(|callee| node_text(callee, source).trim() == "finally")
+        && find_child_by_kind(node, "annotated_lambda").is_some()
+}
+
+fn first_named_child(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).next()
+}
+
+fn candidate_name(value: &str) -> String {
+    let mut name = String::with_capacity(128);
+    for part in value.split_whitespace() {
+        if !name.is_empty() {
+            name.push(' ');
+        }
+        for character in part.chars() {
+            if name.len() + character.len_utf8() > 128 {
+                return name;
+            }
+            name.push(character);
+        }
+        if name.len() == 128 {
+            break;
+        }
+    }
+    name
+}
+
+fn push_relationship(
+    output: &mut AnalysisOutput,
+    overflowed: &mut bool,
+    relationship: AnalyzerRelationship,
+) {
+    if output.relationships.len() < MAX_RELATIONSHIPS {
+        output.relationships.push(relationship);
+    } else {
+        *overflowed = true;
     }
 }
 
@@ -804,6 +989,111 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn extracts_call_control_and_exception_candidates_within_scope() {
+        let source = "class Worker {\n\
+             val initializer = helper()\n\
+             fun run(flag: Boolean) {\n\
+                 // fakeCall()\n\
+                 val text = \"fakeCall()\"\n\
+                 helper()\n\
+                 client.fetch(\"item\")\n\
+                 if (flag) helper()\n\
+                 when (flag) { true -> helper() }\n\
+                 for (item in items) helper()\n\
+                 while (flag) helper()\n\
+                 do { helper() } while (flag)\n\
+                 try { throw IllegalStateException() }\n\
+                 catch (error: Exception) { recover(error) }\n\
+                 finally { cleanup() }\n\
+             }\n\
+             }";
+        let output = analyze(source);
+        let run_id = output
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "run")
+            .expect("function symbol")
+            .id
+            .clone();
+
+        let calls: Vec<_> = output
+            .relationships
+            .iter()
+            .filter(|relationship| relationship.kind == RelationshipKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.target_name.as_deref() == Some("helper"))
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.target_name.as_deref() == Some("finally"))
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.target_name.as_deref() == Some("client.fetch"))
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.target_name.as_deref() == Some("recover"))
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.target_name.as_deref() == Some("cleanup"))
+        );
+        assert!(calls.iter().all(|call| call.source_symbol_id == run_id));
+        assert!(calls.iter().all(|call| call.target_symbol_id.is_none()));
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.confidence == Confidence::Inferred)
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| { !matches!(call.target_name.as_deref(), Some("fakeCall")) })
+        );
+
+        let controls: Vec<_> = output
+            .relationships
+            .iter()
+            .filter(|relationship| relationship.kind == RelationshipKind::Controls)
+            .collect();
+        for control in [
+            "if", "when", "for", "while", "do-while", "try", "catch", "finally",
+        ] {
+            assert!(
+                controls
+                    .iter()
+                    .any(|edge| edge.target_name.as_deref() == Some(control)),
+                "missing {control}; got {:?}",
+                controls
+                    .iter()
+                    .map(|edge| edge.target_name.as_deref())
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(controls.iter().all(|edge| edge.source_symbol_id == run_id));
+        assert!(output.relationships.iter().any(|relationship| {
+            relationship.kind == RelationshipKind::Throws
+                && relationship.source_symbol_id == run_id
+                && relationship.target_name.as_deref() == Some("IllegalStateException()")
+        }));
+        let capability = KotlinAnalyzer
+            .descriptor()
+            .capabilities
+            .into_iter()
+            .find(|capability| capability.feature == AnalysisFeature::ControlFlow)
+            .expect("control-flow capability");
+        assert_eq!(capability.support, SupportLevel::Partial);
     }
 
     #[test]
