@@ -21,6 +21,9 @@ test("sensitive file names and parent folders are excluded from transfer scope",
 test("credential assignments, private keys, bearer values, and known tokens are redacted", () => {
   const input = [
     "api_key = sk-proj-abcdefghijklmnop1234",
+    "OPENAI_API_KEY=openai-value",
+    "AWS_SECRET_ACCESS_KEY=aws-value",
+    "export THIRD_PARTY_TOKEN=token-value",
     "password: my-secret-password",
     "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9",
     "token=ghp_123456789012345678901234567890",
@@ -31,7 +34,7 @@ test("credential assignments, private keys, bearer values, and known tokens are 
   ].join("\n");
 
   const redacted = redactSensitiveText(input);
-  assert.doesNotMatch(redacted, /sk-proj-|my-secret-password|eyJhbGci|ghp_(?:123456|abcdefghijklmnop)|private-key-material/);
+  assert.doesNotMatch(redacted, /sk-proj-|openai-value|aws-value|token-value|my-secret-password|eyJhbGci|ghp_(?:123456|abcdefghijklmnop)|private-key-material/);
   assert.match(redacted, /\[REDACTED PRIVATE KEY\]/);
   assert.match(redacted, /\[REDACTED TOKEN\]/);
 });
