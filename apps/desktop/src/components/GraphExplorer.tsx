@@ -43,6 +43,26 @@ function nodePosition(index: number, count: number) {
   };
 }
 
+function edgeEndpoints(source: { x: number; y: number }, target: { x: number; y: number }) {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  if (dx === 0 && dy === 0) {
+    return {
+      x1: source.x + 42,
+      y1: source.y - 22,
+      x2: target.x + 42,
+      y2: target.y + 22,
+    };
+  }
+  const scale = 1 / Math.max(Math.abs(dx) / 42, Math.abs(dy) / 22);
+  return {
+    x1: source.x + dx * scale,
+    y1: source.y + dy * scale,
+    x2: target.x - dx * scale,
+    y2: target.y - dy * scale,
+  };
+}
+
 function GraphExplorer(props: GraphExplorerProps) {
   const [view, setView] = createSignal<GraphViewKind>("architecture");
   const [selectedId, setSelectedId] = createSignal("");
@@ -161,7 +181,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                       const source = positions().get(edge.sourceNodeId);
                       const target = edge.targetNodeId ? positions().get(edge.targetNodeId) : undefined;
                       return source && target ? <g class={`graph-edge ${edge.confidence}`}>
-                        <line x1={source.x} y1={source.y} x2={target.x} y2={target.y} marker-end="url(#graph-arrow)" />
+                        <line {...edgeEndpoints(source, target)} marker-end="url(#graph-arrow)" />
                         <title>{edge.edgeType}: {source.node.name} → {target.node.name}</title>
                       </g> : null;
                     }}</For>
