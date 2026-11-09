@@ -178,6 +178,7 @@ pub enum AnalyzerErrorCode {
     ResourceLimitExceeded,
     DuplicateLanguage,
     AnalyzerUnavailable,
+    LanguageMismatch,
     Internal,
 }
 
@@ -248,7 +249,18 @@ impl AnalyzerRegistry {
                 message: format!("No analyzer is registered for {language:?}."),
             })?;
 
-        registered.adapter.analyze(input)
+        let output = registered.adapter.analyze(input)?;
+        if output.language != language {
+            return Err(AnalyzerError {
+                code: AnalyzerErrorCode::LanguageMismatch,
+                message: format!(
+                    "The {language:?} analyzer returned output labeled {:?}.",
+                    output.language
+                ),
+            });
+        }
+
+        Ok(output)
     }
 }
 
@@ -257,6 +269,8 @@ mod tests {
     use super::*;
 
     struct StubAnalyzer;
+
+    struct MislabeledAnalyzer;
 
     impl Analyzer for StubAnalyzer {
         fn descriptor(&self) -> AnalyzerDescriptor {
@@ -275,6 +289,22 @@ mod tests {
             assert_eq!(input.source, "fun main() = Unit");
             Ok(AnalysisOutput {
                 language: SourceLanguage::Kotlin,
+                completeness: AnalysisCompleteness::Complete,
+                symbols: Vec::new(),
+                relationships: Vec::new(),
+                diagnostics: Vec::new(),
+            })
+        }
+    }
+
+    impl Analyzer for MislabeledAnalyzer {
+        fn descriptor(&self) -> AnalyzerDescriptor {
+            StubAnalyzer.descriptor()
+        }
+
+        fn analyze(&self, _input: AnalyzerInput<'_>) -> Result<AnalysisOutput, AnalyzerError> {
+            Ok(AnalysisOutput {
+                language: SourceLanguage::Java,
                 completeness: AnalysisCompleteness::Complete,
                 symbols: Vec::new(),
                 relationships: Vec::new(),
@@ -336,6 +366,24 @@ mod tests {
                 .code,
             AnalyzerErrorCode::AnalyzerUnavailable
         );
+    }
+
+    #[test]
+    fn registry_rejects_output_labeled_for_another_language() {
+        let mut registry = AnalyzerRegistry::default();
+        registry.register(Box::new(MislabeledAnalyzer)).unwrap();
+
+        let error = registry
+            .analyze(
+                SourceLanguage::Kotlin,
+                AnalyzerInput {
+                    relative_path: "Main.kt",
+                    source: "class Main",
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, AnalyzerErrorCode::LanguageMismatch);
     }
 
     #[test]
