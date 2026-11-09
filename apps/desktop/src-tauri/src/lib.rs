@@ -4,6 +4,7 @@ pub mod commands;
 pub mod events;
 pub mod git_status;
 pub mod java;
+pub mod knowledge_graph;
 pub mod kotlin;
 pub mod persistence;
 pub mod project_detection;

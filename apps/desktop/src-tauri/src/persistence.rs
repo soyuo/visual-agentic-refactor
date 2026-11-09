@@ -14,7 +14,7 @@ const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.s
 
 #[derive(Clone)]
 pub struct ProjectDatabase {
-    connection: Arc<Mutex<Connection>>,
+    pub(crate) connection: Arc<Mutex<Connection>>,
 }
 
 pub struct PersistenceState {
