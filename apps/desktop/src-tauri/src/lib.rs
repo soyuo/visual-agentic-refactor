@@ -8,6 +8,7 @@ pub mod git_status;
 pub mod java;
 pub mod knowledge_graph;
 pub mod kotlin;
+pub mod openai_provider;
 pub mod persistence;
 pub mod project_detection;
 pub mod scanner;
