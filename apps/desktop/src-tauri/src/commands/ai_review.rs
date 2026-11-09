@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::ai_provider::{
     AiProvider, ProviderError, ProviderErrorCode, ProviderUsage, RetryPolicy, ReviewRequest,
@@ -16,7 +16,7 @@ use crate::credentials::CredentialProvider;
 use crate::events::TaskStatus;
 use crate::openai_provider::OpenAiProvider;
 use crate::persistence::{PersistenceState, StoredReviewSession};
-use crate::state::AppState;
+use crate::state::{AppState, TaskCommitError};
 
 const MAX_MODEL_ID_CHARS: usize = 128;
 const MAX_OUTPUT_TOKENS: u32 = 4_096;
@@ -41,6 +41,14 @@ pub struct RunAiReviewRequest {
     pub selection: ReviewSelection,
     pub provider: CredentialProvider,
     pub model: String,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiReviewTaskStartedEvent {
+    pub request_id: String,
+    pub task_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +91,7 @@ pub async fn run_ai_review(
 ) -> Result<AiReviewResponse, CommandError> {
     let root = canonical_project_path(&request.project_path)?;
     let model = validated_model_id(&request.model)?;
+    let request_id = validated_request_id(&request.request_id)?;
 
     let (context, max_context_tokens) = preview_state
         .consume_approved_context(
@@ -107,6 +116,14 @@ pub async fn run_ai_review(
         }
     };
     let task = app_state.register_task()?;
+    app.emit(
+        "ai-review-task-started",
+        AiReviewTaskStartedEvent {
+            request_id: request_id.to_owned(),
+            task_id: task.task_id(),
+        },
+    )
+    .map_err(|_| internal("리뷰 작업을 시작하지 못했습니다.".to_owned()))?;
     task.emit_status(
         &app,
         TaskStatus::Running,
@@ -138,10 +155,27 @@ pub async fn run_ai_review(
         let validation =
             validate_findings_request(&validation_request, &persistence, &preview_state)?;
         ensure_not_cancelled(&task).map_err(provider_error)?;
-        let session = persistence
-            .database()?
-            .save_review_session(&root.to_string_lossy(), &validation)
-            .map_err(internal)?;
+        let session = task
+            .commit_if_not_cancelled(|| {
+                persistence
+                    .database()
+                    .map_err(|error| error.message)
+                    .and_then(|database| {
+                        database.save_review_session(&root.to_string_lossy(), &validation)
+                    })
+            })
+            .map_err(|error| match error {
+                TaskCommitError::Cancelled => {
+                    CommandError::new(CommandErrorCode::Cancelled, "검토가 취소되었습니다.")
+                }
+                TaskCommitError::Inactive => {
+                    internal("검토 작업이 이미 종료되었습니다.".to_owned())
+                }
+                TaskCommitError::StateUnavailable => {
+                    internal("검토 작업 상태를 확인하지 못했습니다.".to_owned())
+                }
+                TaskCommitError::Operation(message) => internal(message),
+            })?;
         Ok(AiReviewResponse {
             session,
             provider_id: provider_response.provider_id,
@@ -213,6 +247,14 @@ fn validated_model_id(model: &str) -> Result<&str, CommandError> {
         return Err(invalid("제공자 모델 ID를 입력해 주세요."));
     }
     Ok(model)
+}
+
+fn validated_request_id(request_id: &str) -> Result<&str, CommandError> {
+    let request_id = request_id.trim();
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err(invalid("리뷰 요청 ID는 1~128자여야 합니다."));
+    }
+    Ok(request_id)
 }
 
 fn invalid(message: impl Into<String>) -> CommandError {

@@ -1,5 +1,7 @@
 import { createEffect, createSignal, onMount, Show } from "solid-js";
+import { listen } from "@tauri-apps/api/event";
 import {
+  cancelTask,
   deleteProviderCredential,
   listProviderCredentials,
   listReviewSessions,
@@ -11,6 +13,7 @@ import {
   previewReviewContext,
   toAppCommandError,
   type CredentialProvider,
+  type AiReviewTaskStartedEvent,
   type GraphSnapshot,
   type ProviderCredentialStatus,
   type OpenProjectResponse,
@@ -35,7 +38,6 @@ interface AiReviewWorkspaceProps {
   selectedEntry: ScanEntry | null;
   graphSnapshot: GraphSnapshot | null;
   selectedGraphNodeId: string | null;
-  onCancelTask: () => void;
 }
 
 function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
@@ -55,6 +57,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [previewError, setPreviewError] = createSignal<string | null>(null);
   const [model, setModel] = createSignal("");
   const [reviewRunning, setReviewRunning] = createSignal(false);
+  const [reviewTaskId, setReviewTaskId] = createSignal<number | null>(null);
   const [reviewError, setReviewError] = createSignal<string | null>(null);
   const [reviewNotice, setReviewNotice] = createSignal<string | null>(null);
   const [reviewMetadata, setReviewMetadata] = createSignal<string | null>(null);
@@ -139,7 +142,10 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     setActiveSession(null);
     setSelectedSessionId("");
     setSessionError(null);
-    if (!path) return;
+    if (!path) {
+      setSessionLoading(false);
+      return;
+    }
     setSessionLoading(true);
     void listReviewSessions(path).then((items) => {
       if (requestVersion === sessionRequestVersion && props.project?.path === path) setSessions(items);
@@ -238,8 +244,9 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     setSelectedSessionId(sessionId);
     setSessionError(null);
     setReviewMetadata(null);
+    setActiveSession(null);
     if (!projectPath || !sessionId) {
-      setActiveSession(null);
+      setSessionLoading(false);
       return;
     }
 
@@ -313,16 +320,22 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     setConsentDialogOpen(false);
     setConsentDecision("approved");
     setReviewRunning(true);
+    setReviewTaskId(null);
     setReviewError(null);
     setReviewNotice(null);
     setReviewMetadata(null);
+    const requestId = crypto.randomUUID();
+    let unlistenTaskStarted: (() => void) | undefined;
     try {
       await approveReviewTransfer(request);
       if (approvedScopeKey !== scopeKey()) {
         setReviewNotice("선택 범위가 바뀌어 외부 요청을 시작하지 않았습니다. 새 문맥을 미리보기 하세요.");
         return;
       }
-      const response = await runAiReview(request);
+      unlistenTaskStarted = await listen<AiReviewTaskStartedEvent>("ai-review-task-started", (event) => {
+        if (event.payload.requestId === requestId) setReviewTaskId(event.payload.taskId);
+      });
+      const response = await runAiReview({ ...request, requestId });
       if (approvedScopeKey !== scopeKey() || props.project?.path !== project.path) return;
       setActiveSession(response.session);
       setSelectedSessionId(response.session.sessionId);
@@ -341,8 +354,21 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         setConsentDecision(null);
       }
     } finally {
+      unlistenTaskStarted?.();
+      setReviewTaskId(null);
       setReviewRunning(false);
       queueMicrotask(() => returnFocus?.focus());
+    }
+  }
+
+  async function cancelReview() {
+    const taskId = reviewTaskId();
+    if (taskId === null) return;
+    try {
+      await cancelTask(taskId);
+      setReviewNotice("검토 취소를 요청했습니다.");
+    } catch (cause: unknown) {
+      setReviewError(toAppCommandError(cause).message);
     }
   }
 
@@ -532,7 +558,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         <Show when={reviewRunning()}>
           <div class="review-progress" role="status" aria-live="polite">
             <span>선택한 문맥을 제공자에게 보내 리뷰를 진행하고 있습니다.</span>
-            <button class="secondary-button" type="button" onClick={() => { props.onCancelTask(); setReviewNotice("검토 취소를 요청했습니다."); }}>검토 취소</button>
+            <button class="secondary-button" type="button" disabled={reviewTaskId() === null} onClick={() => void cancelReview()}>검토 취소</button>
           </div>
         </Show>
         <Show when={reviewError()}><p class="inline-error" role="alert">{reviewError()}</p></Show>

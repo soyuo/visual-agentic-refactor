@@ -178,6 +178,12 @@ export interface ApproveReviewTransferRequest {
 }
 
 export interface RunAiReviewRequest extends ApproveReviewTransferRequest {
+  requestId: string;
+}
+
+export interface AiReviewTaskStartedEvent {
+  requestId: string;
+  taskId: number;
 }
 
 export interface ProviderUsage {
