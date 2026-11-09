@@ -1,5 +1,6 @@
 pub mod ai_provider;
 pub mod analyzer;
+pub mod anthropic_provider;
 pub mod command_error;
 pub mod commands;
 pub mod credentials;
