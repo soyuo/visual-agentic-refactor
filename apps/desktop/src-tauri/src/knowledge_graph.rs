@@ -725,7 +725,7 @@ mod tests {
     }
 
     fn snapshot(snapshot_id: &str, name: &str) -> GraphSnapshotInput {
-        let node_id = stable_node_id(GraphNodeType::Method, "src/Main.kt:Sample.run").unwrap();
+        let node_id = stable_node_id(GraphNodeType::Symbol, "src/Main.kt:Sample.run").unwrap();
         GraphSnapshotInput {
             snapshot_id: snapshot_id.into(),
             head_sha: Some("abc123".into()),
@@ -736,7 +736,7 @@ mod tests {
             analyzed_at_unix_ms: Some(1234),
             nodes: vec![GraphNode {
                 node_id: node_id.clone(),
-                node_type: GraphNodeType::Method,
+                node_type: GraphNodeType::Symbol,
                 name: name.into(),
                 qualified_name: Some("Sample.run".into()),
                 file_path: Some("src/Main.kt".into()),

@@ -29,6 +29,9 @@ pub fn run() {
             commands::git::get_git_status,
             commands::project::open_project,
             commands::project::get_last_project,
+            commands::graph::save_graph_snapshot,
+            commands::graph::list_graph_snapshots,
+            commands::graph::get_graph_snapshot,
             commands::scanner::scan_project,
             commands::tasks::cancel_task
         ])
