@@ -329,8 +329,197 @@
   cursor: not-allowed;
 }
 
+.review-model-field {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+  margin: 18px 0;
+}
+
+.review-model-field label,
+.review-history > label {
+  color: #303b51;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.review-model-field input,
+.review-history select {
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid #dce2ed;
+  border-radius: 8px;
+  color: #263247;
+  font: inherit;
+}
+
+.review-model-field span {
+  grid-column: 2;
+  color: #8992a3;
+  font-size: 12px;
+}
+
+.review-progress,
+.review-results-heading,
+.review-finding-heading,
+.finding-decision-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.review-progress {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  background: #f1f6ff;
+  color: #344967;
+}
+
+.review-history {
+  display: grid;
+  gap: 12px;
+}
+
+.review-history .ai-settings-heading {
+  margin-bottom: 0;
+}
+
+.review-history select {
+  width: 100%;
+  background: #fff;
+}
+
+.review-results {
+  margin-top: 14px;
+  padding-top: 18px;
+  border-top: 1px solid #e9edf4;
+}
+
+.review-results-heading h3,
+.review-results-heading p,
+.review-finding-heading h4 {
+  margin: 0;
+}
+
+.review-results-heading p {
+  margin-top: 5px;
+  color: #788399;
+  font-size: 12px;
+}
+
+.review-state,
+.review-finding-badges span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #edf1f7;
+  color: #526078;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.review-state-complete { background: #e7f5ed; color: #246b48; }
+.review-state-partial { background: #fff3d9; color: #775b1c; }
+.review-state-invalid { background: #fde9e9; color: #8e3434; }
+.review-state-empty { background: #edf1f7; color: #526078; }
+
+.review-diagnostics {
+  padding: 10px 12px 10px 30px;
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #725c25;
+  font-size: 12px;
+}
+
+.review-finding-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.review-finding-card {
+  padding: 16px;
+  border: 1px solid #e3e8f0;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.review-finding-heading h4 {
+  color: #263247;
+  font-size: 15px;
+}
+
+.review-finding-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.severity-critical, .severity-high { background: #fde9e9 !important; color: #8e3434 !important; }
+.severity-medium { background: #fff3d9 !important; color: #775b1c !important; }
+.severity-low { background: #e9f1ff !important; color: #3a5f97 !important; }
+
+.review-finding-card > p {
+  color: #536078;
+  line-height: 1.6;
+}
+
+.review-finding-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 12px 0;
+}
+
+.review-finding-meta div { min-width: 100px; }
+.review-finding-meta dt { color: #8992a3; font-size: 11px; }
+.review-finding-meta dd { margin: 3px 0 0; color: #38465d; font-size: 12px; overflow-wrap: anywhere; }
+
+.finding-evidence {
+  margin: 12px 0;
+  padding: 11px 13px;
+  border-left: 3px solid #7f9ac6;
+  background: #f5f7fb;
+  color: #38465d;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.finding-decision-row {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #edf0f5;
+  color: #536078;
+  font-size: 12px;
+}
+
+.finding-decision-row > div { display: flex; gap: 8px; }
+.finding-decision-row button[aria-pressed="true"] { border-color: #5878aa; background: #edf3ff; color: #294c82; }
+.review-finding-card button:disabled { opacity: 0.6; cursor: wait; }
+
+.ai-review-workspace button:focus-visible,
+.ai-review-workspace input:focus-visible,
+.ai-review-workspace select:focus-visible {
+  outline: 3px solid #3f70b6;
+  outline-offset: 2px;
+}
+
 @media (max-width: 900px) {
   .credential-form {
     grid-template-columns: minmax(100px, 130px) minmax(0, 1fr);
   }
+
+  .review-model-field { grid-template-columns: minmax(0, 1fr); }
+  .review-model-field span { grid-column: 1; }
+  .review-finding-heading,
+  .finding-decision-row { align-items: flex-start; flex-direction: column; }
 }

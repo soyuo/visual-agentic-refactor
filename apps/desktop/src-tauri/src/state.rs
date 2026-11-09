@@ -24,6 +24,14 @@ pub struct TaskControl {
     registry: Weak<TaskRegistry>,
 }
 
+#[derive(Debug)]
+pub enum TaskCommitError<E> {
+    Cancelled,
+    Inactive,
+    StateUnavailable,
+    Operation(E),
+}
+
 impl AppState {
     pub fn register_task(&self) -> Result<TaskControl, CommandError> {
         let task_id = self.inner.next_task_id.fetch_add(1, Ordering::Relaxed) + 1;
@@ -72,6 +80,29 @@ impl TaskControl {
 
     pub fn is_cancel_requested(&self) -> bool {
         self.cancellation_requested.load(Ordering::Acquire)
+    }
+
+    /// Runs a final commit while cancellation requests are excluded.
+    /// A successful or failed commit closes the task before cancellation can proceed.
+    pub fn commit_if_not_cancelled<T, E>(
+        &self,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, TaskCommitError<E>> {
+        let registry = self.registry.upgrade().ok_or(TaskCommitError::Inactive)?;
+        let mut cancellation_flags = registry
+            .cancellation_flags
+            .lock()
+            .map_err(|_| TaskCommitError::StateUnavailable)?;
+        let Some(cancellation_requested) = cancellation_flags.get(&self.task_id) else {
+            return Err(TaskCommitError::Inactive);
+        };
+        if cancellation_requested.load(Ordering::Acquire) {
+            return Err(TaskCommitError::Cancelled);
+        }
+
+        let result = operation().map_err(TaskCommitError::Operation);
+        cancellation_flags.remove(&self.task_id);
+        result
     }
 
     pub fn emit_progress(
@@ -151,5 +182,39 @@ mod tests {
             .request_cancel(task_id)
             .expect_err("completed task should no longer be cancellable");
         assert!(matches!(error.code, CommandErrorCode::InvalidInput));
+    }
+
+    #[test]
+    fn commit_if_not_cancelled_skips_cancelled_work_and_closes_completed_task() {
+        let state = AppState::default();
+        let task = state.register_task().expect("register task");
+        let task_id = task.task_id();
+        state.request_cancel(task_id).expect("request cancellation");
+        let mut committed = false;
+
+        assert!(matches!(
+            task.commit_if_not_cancelled(|| {
+                committed = true;
+                Ok::<_, ()>(())
+            }),
+            Err(TaskCommitError::Cancelled)
+        ));
+        assert!(!committed);
+
+        let completed = state.register_task().expect("register completion task");
+        let completed_id = completed.task_id();
+        assert_eq!(
+            completed
+                .commit_if_not_cancelled(|| Ok::<_, ()>("saved"))
+                .expect("commit while active"),
+            "saved"
+        );
+        assert!(matches!(
+            state
+                .request_cancel(completed_id)
+                .expect_err("committed task is closed")
+                .code,
+            CommandErrorCode::InvalidInput
+        ));
     }
 }

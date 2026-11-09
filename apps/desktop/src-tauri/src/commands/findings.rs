@@ -49,7 +49,7 @@ pub(crate) fn validate_findings_request(
         return Err(invalid("프로젝트 경로가 디렉터리가 아닙니다."));
     }
 
-    let (included_files, included_source_spans) = preview_state
+    let (_, _, included_files, included_source_spans) = preview_state
         .validated_context(
             &request.preview_id,
             &root.to_string_lossy(),

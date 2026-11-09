@@ -15,6 +15,7 @@ use crate::context_builder::{
     ContextInputs, RenderedSourceSpan, ReviewContextPreview, ReviewContextScope,
     build_review_context, is_sensitive_path,
 };
+use crate::credentials::CredentialProvider;
 use crate::knowledge_graph::GraphSnapshot;
 use crate::persistence::PersistenceState;
 
@@ -35,8 +36,11 @@ struct PreviewClaim {
     project_path: String,
     snapshot_id: Option<String>,
     scope: ReviewContextScope,
+    context: String,
+    token_budget: u32,
     included_files: Vec<String>,
     included_source_spans: Vec<RenderedSourceSpan>,
+    approved_transfer: Option<(CredentialProvider, String)>,
 }
 
 impl ReviewContextPreviewState {
@@ -51,8 +55,11 @@ impl ReviewContextPreviewState {
             project_path,
             snapshot_id: preview.graph_snapshot_id.clone(),
             scope,
+            context: preview.context.clone(),
+            token_budget: preview.token_budget,
             included_files: preview.included_files.clone(),
             included_source_spans: preview.included_source_spans.clone(),
+            approved_transfer: None,
         };
         let mut previews = self
             .previews
@@ -72,7 +79,7 @@ impl ReviewContextPreviewState {
         project_path: &str,
         snapshot_id: &str,
         selection: &ReviewSelection,
-    ) -> Result<(Vec<String>, Vec<RenderedSourceSpan>), String> {
+    ) -> Result<(String, u32, Vec<String>, Vec<RenderedSourceSpan>), String> {
         let previews = self
             .previews
             .lock()
@@ -89,9 +96,74 @@ impl ReviewContextPreviewState {
             );
         }
         Ok((
+            claim.context.clone(),
+            claim.token_budget,
             claim.included_files.clone(),
             claim.included_source_spans.clone(),
         ))
+    }
+
+    pub(crate) fn approve_provider_transfer(
+        &self,
+        preview_id: &str,
+        project_path: &str,
+        snapshot_id: &str,
+        selection: &ReviewSelection,
+        provider: CredentialProvider,
+        model: &str,
+    ) -> Result<(), String> {
+        let mut previews = self
+            .previews
+            .lock()
+            .map_err(|_| "문맥 미리보기 상태를 확인할 수 없습니다.".to_owned())?;
+        let claim = previews.get_mut(preview_id).ok_or_else(|| {
+            "문맥 미리보기가 만료되었습니다. 다시 미리보기를 생성하세요.".to_owned()
+        })?;
+        if claim.project_path != project_path
+            || claim.snapshot_id.as_deref() != Some(snapshot_id)
+            || !selection_matches_scope(&claim.scope, selection)
+        {
+            return Err(
+                "문맥 미리보기의 프로젝트, 스냅샷 또는 선택 범위가 일치하지 않습니다.".to_owned(),
+            );
+        }
+        claim.approved_transfer = Some((provider, model.to_owned()));
+        Ok(())
+    }
+
+    pub(crate) fn consume_approved_context(
+        &self,
+        preview_id: &str,
+        project_path: &str,
+        snapshot_id: &str,
+        selection: &ReviewSelection,
+        provider: CredentialProvider,
+        model: &str,
+    ) -> Result<(String, u32), String> {
+        let mut previews = self
+            .previews
+            .lock()
+            .map_err(|_| "문맥 미리보기 상태를 확인할 수 없습니다.".to_owned())?;
+        let claim = previews.get_mut(preview_id).ok_or_else(|| {
+            "문맥 미리보기가 만료되었습니다. 다시 미리보기를 생성하세요.".to_owned()
+        })?;
+        if claim.project_path != project_path
+            || claim.snapshot_id.as_deref() != Some(snapshot_id)
+            || !selection_matches_scope(&claim.scope, selection)
+        {
+            return Err(
+                "문맥 미리보기의 프로젝트, 스냅샷 또는 선택 범위가 일치하지 않습니다.".to_owned(),
+            );
+        }
+        if !matches!(
+            claim.approved_transfer.as_ref(),
+            Some((approved_provider, approved_model))
+                if *approved_provider == provider && approved_model == model
+        ) {
+            return Err("제공자, 모델, 문맥 범위에 대한 일회성 전송 동의가 필요합니다.".to_owned());
+        }
+        claim.approved_transfer = None;
+        Ok((claim.context.clone(), claim.token_budget))
     }
 }
 
@@ -169,7 +241,7 @@ mod preview_state_tests {
             .register("C:/work/sample".to_owned(), scope, &mut preview)
             .expect("register preview");
 
-        let (files, spans) = state
+        let (context, token_budget, files, spans) = state
             .validated_context(
                 &preview.preview_id,
                 "C:/work/sample",
@@ -182,6 +254,8 @@ mod preview_state_tests {
             .expect("validated preview");
         assert_eq!(files, preview.included_files);
         assert_eq!(spans, preview.included_source_spans);
+        assert_eq!(context, preview.context);
+        assert_eq!(token_budget, preview.token_budget);
         assert!(!preview.preview_id.is_empty());
     }
 
@@ -210,6 +284,95 @@ mod preview_state_tests {
             },
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn provider_transfer_approval_is_scope_bound_and_one_time() {
+        let state = ReviewContextPreviewState::default();
+        let scope = ReviewContextScope::File {
+            relative_path: "src/Main.kt".to_owned(),
+            range: None,
+        };
+        let mut preview = preview();
+        state
+            .register("C:/work/sample".to_owned(), scope, &mut preview)
+            .expect("register preview");
+        let selection = ReviewSelection::File {
+            relative_path: "src/Main.kt".to_owned(),
+            range: None,
+        };
+
+        assert!(
+            state
+                .consume_approved_context(
+                    &preview.preview_id,
+                    "C:/work/sample",
+                    "snapshot-1",
+                    &selection,
+                    CredentialProvider::OpenAi,
+                    "model-a",
+                )
+                .is_err()
+        );
+        state
+            .approve_provider_transfer(
+                &preview.preview_id,
+                "C:/work/sample",
+                "snapshot-1",
+                &selection,
+                CredentialProvider::Anthropic,
+                "model-a",
+            )
+            .expect("approve transfer");
+        assert!(
+            state
+                .consume_approved_context(
+                    &preview.preview_id,
+                    "C:/work/sample",
+                    "snapshot-1",
+                    &selection,
+                    CredentialProvider::OpenAi,
+                    "model-a",
+                )
+                .is_err()
+        );
+        assert!(
+            state
+                .consume_approved_context(
+                    &preview.preview_id,
+                    "C:/work/sample",
+                    "snapshot-1",
+                    &selection,
+                    CredentialProvider::Anthropic,
+                    "model-b",
+                )
+                .is_err()
+        );
+        assert_eq!(
+            state
+                .consume_approved_context(
+                    &preview.preview_id,
+                    "C:/work/sample",
+                    "snapshot-1",
+                    &selection,
+                    CredentialProvider::Anthropic,
+                    "model-a",
+                )
+                .expect("consume approved transfer"),
+            (preview.context.clone(), preview.token_budget)
+        );
+        assert!(
+            state
+                .consume_approved_context(
+                    &preview.preview_id,
+                    "C:/work/sample",
+                    "snapshot-1",
+                    &selection,
+                    CredentialProvider::Anthropic,
+                    "model-a",
+                )
+                .is_err()
+        );
     }
 }
 
