@@ -156,14 +156,100 @@ export interface PreviewReviewContextRequest {
 }
 
 export interface ReviewContextPreview {
+  previewId: string;
   context: string;
   estimatedTokens: number;
   tokenBudget: number;
   includedFiles: string[];
+  includedSourceSpans: RenderedSourceSpan[];
   omittedItems: string[];
   graphSnapshotId: string | null;
   graphCompleteness: string | null;
   tokenEstimateNote: string;
+}
+
+export interface RenderedSourceSpan {
+  relativePath: string;
+  startLine: number;
+  endLine: number;
+  visibleText: string;
+}
+
+export type ReviewFindingCategory =
+  | "correctness"
+  | "security"
+  | "performance"
+  | "reliability"
+  | "maintainability"
+  | "testability"
+  | "style"
+  | "other";
+export type ReviewFindingSeverity = "critical" | "high" | "medium" | "low" | "informational";
+export type ReviewFindingConfidence = "high" | "medium" | "low";
+
+export interface ReviewFindingEvidence {
+  relativePath: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  excerpt: string;
+}
+
+export interface ReviewFinding {
+  title: string;
+  description: string;
+  category: ReviewFindingCategory;
+  severity: ReviewFindingSeverity;
+  confidence: ReviewFindingConfidence;
+  evidence: ReviewFindingEvidence[];
+  affectedSymbols: string[];
+  suggestion: string;
+  testSuggestion: string;
+}
+
+export type ReviewFindingsValidationState = "complete" | "partial" | "invalid";
+export type ReviewFindingValidationCode =
+  | "invalidStructuredOutput"
+  | "tooManyFindings"
+  | "invalidFindingSchema"
+  | "missingEvidence"
+  | "invalidPath"
+  | "outsideSelectedContext"
+  | "missingSnapshotEvidence"
+  | "sourceUnavailable"
+  | "sourceChanged"
+  | "sourceLimitExceeded"
+  | "invalidRange"
+  | "excerptMismatch"
+  | "symbolNotFound"
+  | "invalidSelection"
+  | "snapshotMismatch"
+  | "projectMismatch";
+
+export interface ReviewFindingValidationDiagnostic {
+  findingIndex: number | null;
+  code: ReviewFindingValidationCode;
+  message: string;
+}
+
+export interface ReviewFindingsValidationResult {
+  state: ReviewFindingsValidationState;
+  snapshotId: string | null;
+  findings: ReviewFinding[];
+  diagnostics: ReviewFindingValidationDiagnostic[];
+}
+
+export type ReviewFindingSelection =
+  | { file: { relativePath: string; range: SourceRange | null } }
+  | { graphNode: { nodeId: string; label: string; range: SourceRange | null } };
+
+export interface ValidateReviewFindingsRequest {
+  projectPath: string;
+  previewId: string;
+  snapshotId: string;
+  selection: ReviewFindingSelection;
+  structuredOutput: unknown;
 }
 
 export interface AnalyzeSpringProjectResponse {
@@ -369,6 +455,16 @@ export async function previewReviewContext(
 ): Promise<ReviewContextPreview> {
   try {
     return await invoke<ReviewContextPreview>("preview_review_context", { request });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function validateReviewFindings(
+  request: ValidateReviewFindingsRequest,
+): Promise<ReviewFindingsValidationResult> {
+  try {
+    return await invoke<ReviewFindingsValidationResult>("validate_review_findings", { request });
   } catch (error) {
     throw toAppCommandError(error);
   }

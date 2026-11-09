@@ -2,14 +2,18 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use tauri::State;
 
+use crate::ai_provider::ReviewSelection;
 use crate::command_error::{CommandError, CommandErrorCode};
 use crate::context_builder::{
-    ContextInputs, ReviewContextPreview, ReviewContextScope, build_review_context,
-    is_sensitive_path,
+    ContextInputs, RenderedSourceSpan, ReviewContextPreview, ReviewContextScope,
+    build_review_context, is_sensitive_path,
 };
 use crate::knowledge_graph::GraphSnapshot;
 use crate::persistence::PersistenceState;
@@ -19,6 +23,195 @@ const MAX_RELATED_SOURCE_BYTES: u64 = 1024 * 1024;
 const MAX_RELATED_FILES: usize = 24;
 const MAX_TOTAL_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RULE_BYTES: u64 = 32 * 1024;
+const MAX_REGISTERED_PREVIEWS: usize = 32;
+
+#[derive(Default)]
+pub struct ReviewContextPreviewState {
+    previews: Mutex<BTreeMap<String, PreviewClaim>>,
+}
+
+#[derive(Clone)]
+struct PreviewClaim {
+    project_path: String,
+    snapshot_id: Option<String>,
+    scope: ReviewContextScope,
+    included_files: Vec<String>,
+    included_source_spans: Vec<RenderedSourceSpan>,
+}
+
+impl ReviewContextPreviewState {
+    fn register(
+        &self,
+        project_path: String,
+        scope: ReviewContextScope,
+        preview: &mut ReviewContextPreview,
+    ) -> Result<(), String> {
+        let preview_id = new_preview_id();
+        let claim = PreviewClaim {
+            project_path,
+            snapshot_id: preview.graph_snapshot_id.clone(),
+            scope,
+            included_files: preview.included_files.clone(),
+            included_source_spans: preview.included_source_spans.clone(),
+        };
+        let mut previews = self
+            .previews
+            .lock()
+            .map_err(|_| "문맥 미리보기 상태를 확인할 수 없습니다.".to_owned())?;
+        if previews.len() >= MAX_REGISTERED_PREVIEWS {
+            previews.clear();
+        }
+        previews.insert(preview_id.clone(), claim);
+        preview.preview_id = preview_id;
+        Ok(())
+    }
+
+    pub(crate) fn validated_context(
+        &self,
+        preview_id: &str,
+        project_path: &str,
+        snapshot_id: &str,
+        selection: &ReviewSelection,
+    ) -> Result<(Vec<String>, Vec<RenderedSourceSpan>), String> {
+        let previews = self
+            .previews
+            .lock()
+            .map_err(|_| "문맥 미리보기 상태를 확인할 수 없습니다.".to_owned())?;
+        let claim = previews.get(preview_id).ok_or_else(|| {
+            "문맥 미리보기가 만료되었습니다. 다시 미리보기를 생성하세요.".to_owned()
+        })?;
+        if claim.project_path != project_path
+            || claim.snapshot_id.as_deref() != Some(snapshot_id)
+            || !selection_matches_scope(&claim.scope, selection)
+        {
+            return Err(
+                "문맥 미리보기의 프로젝트, 스냅샷 또는 선택 범위가 일치하지 않습니다.".to_owned(),
+            );
+        }
+        Ok((
+            claim.included_files.clone(),
+            claim.included_source_spans.clone(),
+        ))
+    }
+}
+
+static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(1);
+
+fn new_preview_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(
+        "{timestamp:032x}-{:016x}",
+        NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn selection_matches_scope(scope: &ReviewContextScope, selection: &ReviewSelection) -> bool {
+    match (scope, selection) {
+        (
+            ReviewContextScope::File {
+                relative_path: scope_path,
+                range: scope_range,
+            },
+            ReviewSelection::File {
+                relative_path: selected_path,
+                range: selected_range,
+            },
+        ) => scope_path == selected_path && scope_range == selected_range,
+        (
+            ReviewContextScope::GraphNode {
+                node_id: scope_node,
+            },
+            ReviewSelection::GraphNode {
+                node_id: selected_node,
+                ..
+            },
+        ) => scope_node == selected_node,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod preview_state_tests {
+    use super::*;
+
+    fn preview() -> ReviewContextPreview {
+        ReviewContextPreview {
+            preview_id: String::new(),
+            context: "visible source".to_owned(),
+            estimated_tokens: 13,
+            token_budget: 128,
+            included_files: vec!["src/Main.kt".to_owned()],
+            included_source_spans: vec![RenderedSourceSpan {
+                relative_path: "src/Main.kt".to_owned(),
+                start_line: 1,
+                end_line: 1,
+                visible_text: "fun main() {}".to_owned(),
+            }],
+            omitted_items: Vec::new(),
+            graph_snapshot_id: Some("snapshot-1".to_owned()),
+            graph_completeness: Some("Complete".to_owned()),
+            token_estimate_note: "test".to_owned(),
+        }
+    }
+
+    #[test]
+    fn preview_claim_binds_project_snapshot_scope_and_rendered_spans() {
+        let state = ReviewContextPreviewState::default();
+        let scope = ReviewContextScope::File {
+            relative_path: "src/Main.kt".to_owned(),
+            range: None,
+        };
+        let mut preview = preview();
+        state
+            .register("C:/work/sample".to_owned(), scope, &mut preview)
+            .expect("register preview");
+
+        let (files, spans) = state
+            .validated_context(
+                &preview.preview_id,
+                "C:/work/sample",
+                "snapshot-1",
+                &ReviewSelection::File {
+                    relative_path: "src/Main.kt".to_owned(),
+                    range: None,
+                },
+            )
+            .expect("validated preview");
+        assert_eq!(files, preview.included_files);
+        assert_eq!(spans, preview.included_source_spans);
+        assert!(!preview.preview_id.is_empty());
+    }
+
+    #[test]
+    fn preview_claim_rejects_a_forged_or_stale_scope() {
+        let state = ReviewContextPreviewState::default();
+        let mut preview = preview();
+        state
+            .register(
+                "C:/work/sample".to_owned(),
+                ReviewContextScope::File {
+                    relative_path: "src/Main.kt".to_owned(),
+                    range: None,
+                },
+                &mut preview,
+            )
+            .expect("register preview");
+
+        let result = state.validated_context(
+            &preview.preview_id,
+            "C:/work/other",
+            "snapshot-1",
+            &ReviewSelection::File {
+                relative_path: "src/Other.kt".to_owned(),
+                range: None,
+            },
+        );
+        assert!(result.is_err());
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +226,7 @@ pub struct PreviewReviewContextRequest {
 pub fn preview_review_context(
     request: PreviewReviewContextRequest,
     persistence: State<'_, PersistenceState>,
+    preview_state: State<'_, ReviewContextPreviewState>,
 ) -> Result<ReviewContextPreview, CommandError> {
     let project_path = PathBuf::from(&request.project_path);
     if !project_path.is_absolute() {
@@ -114,7 +308,7 @@ pub fn preview_review_context(
         .and_then(|name| name.to_str())
         .unwrap_or("project");
     let project_stack = graph.as_ref().map(graph_languages).unwrap_or_default();
-    build_review_context(ContextInputs {
+    let mut preview = build_review_context(ContextInputs {
         project_name,
         scope: &request.scope,
         graph: graph.as_ref(),
@@ -125,7 +319,15 @@ pub fn preview_review_context(
         source_omissions: &omissions,
         max_context_tokens: request.max_context_tokens,
     })
-    .map_err(invalid)
+    .map_err(invalid)?;
+    preview_state
+        .register(
+            root.to_string_lossy().into_owned(),
+            request.scope,
+            &mut preview,
+        )
+        .map_err(internal)?;
+    Ok(preview)
 }
 
 fn latest_graph(

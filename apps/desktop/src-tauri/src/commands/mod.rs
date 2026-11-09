@@ -1,6 +1,7 @@
 pub mod app;
 pub mod context;
 pub mod credentials;
+pub mod findings;
 pub mod git;
 pub mod graph;
 pub mod project;

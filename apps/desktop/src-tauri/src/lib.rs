@@ -13,6 +13,7 @@ pub mod kotlin;
 pub mod openai_provider;
 pub mod persistence;
 pub mod project_detection;
+pub mod review_finding;
 pub mod scanner;
 pub mod spring;
 pub mod state;
@@ -21,6 +22,7 @@ pub mod state;
 pub fn run() {
     tauri::Builder::default()
         .manage(state::AppState::default())
+        .manage(commands::context::ReviewContextPreviewState::default())
         .setup(|app| {
             use tauri::Manager;
 
@@ -35,6 +37,7 @@ pub fn run() {
             commands::credentials::list_provider_credentials,
             commands::credentials::save_provider_credential,
             commands::credentials::delete_provider_credential,
+            commands::findings::validate_review_findings,
             commands::context::preview_review_context,
             commands::git::get_git_status,
             commands::project::open_project,

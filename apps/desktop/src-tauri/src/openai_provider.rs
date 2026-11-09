@@ -230,9 +230,9 @@ fn finding_schema() -> Value {
                     "properties": {
                         "title": { "type": "string" },
                         "description": { "type": "string" },
-                        "category": { "type": "string" },
-                        "severity": { "type": "string" },
-                        "confidence": { "type": "string" },
+                        "category": { "type": "string", "enum": ["correctness", "security", "performance", "reliability", "maintainability", "testability", "style", "other"] },
+                        "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "informational"] },
+                        "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
                         "evidence": {
                             "type": "array",
                             "items": {
@@ -241,10 +241,12 @@ fn finding_schema() -> Value {
                                 "properties": {
                                     "relativePath": { "type": "string" },
                                     "startLine": { "type": "integer" },
+                                    "startColumn": { "type": "integer" },
                                     "endLine": { "type": "integer" },
+                                    "endColumn": { "type": "integer" },
                                     "excerpt": { "type": "string" }
                                 },
-                                "required": ["relativePath", "startLine", "endLine", "excerpt"]
+                                "required": ["relativePath", "startLine", "startColumn", "endLine", "endColumn", "excerpt"]
                             }
                         },
                         "affectedSymbols": { "type": "array", "items": { "type": "string" } },
