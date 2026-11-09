@@ -29,6 +29,114 @@ export interface OpenProjectResponse {
   persistenceError: string | null;
 }
 
+export type SourceLanguage = "kotlin" | "java";
+export type Confidence = "confirmed" | "inferred" | "unknown";
+export type GraphCompleteness = "complete" | "partial";
+export type GraphDiagnosticSeverity = "info" | "warning" | "error";
+
+export type GraphNodeType =
+  | "project"
+  | "module"
+  | "directory"
+  | "file"
+  | "package"
+  | "symbol"
+  | "class"
+  | "interface"
+  | "function"
+  | "method"
+  | "apiEndpoint"
+  | "dto"
+  | "dependency"
+  | "externalService";
+
+export type GraphEdgeType =
+  | "contains"
+  | "declares"
+  | "imports"
+  | "dependsOn"
+  | "calls"
+  | "implements"
+  | "extends"
+  | "inherits"
+  | "injects"
+  | "exposes"
+  | "usesDto"
+  | "accesses"
+  | "references"
+  | "controls"
+  | "throws"
+  | "annotatedBy";
+
+export interface SourceRange {
+  relativePath: string;
+  startByte: number;
+  endByte: number;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+}
+
+export interface GraphNode {
+  nodeId: string;
+  nodeType: GraphNodeType;
+  name: string;
+  qualifiedName: string | null;
+  filePath: string | null;
+  sourceEvidence: SourceRange | null;
+  language: SourceLanguage | null;
+  metadata: unknown;
+  confidence: Confidence;
+}
+
+export interface GraphEdge {
+  edgeId: string;
+  edgeType: GraphEdgeType;
+  sourceNodeId: string;
+  targetNodeId: string | null;
+  targetName: string | null;
+  evidence: SourceRange;
+  confidence: Confidence;
+}
+
+export interface GraphDiagnostic {
+  code: string;
+  severity: GraphDiagnosticSeverity;
+  message: string;
+  sourceEvidence: SourceRange | null;
+}
+
+export interface GraphSnapshotInput {
+  snapshotId: string;
+  headSha: string | null;
+  analyzerVersion: string;
+  sourceHashes: Record<string, string>;
+  settings: unknown;
+  completeness: GraphCompleteness;
+  analyzedAtUnixMs: number | null;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  diagnostics: GraphDiagnostic[];
+}
+
+export interface GraphSnapshotSummary {
+  snapshotId: string;
+  headSha: string | null;
+  analyzerVersion: string;
+  sourceHashes: Record<string, string>;
+  settings: unknown;
+  completeness: GraphCompleteness;
+  analyzedAtUnixMs: number;
+}
+
+export interface GraphSnapshot extends GraphSnapshotSummary {
+  projectPath: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  diagnostics: GraphDiagnostic[];
+}
+
 export interface ScanOptions {
   /** Gitignore-style rules; a leading `!` can re-include a default exclusion. */
   ignorePatterns?: string[];
@@ -174,6 +282,44 @@ export function toAppCommandError(error: unknown): AppCommandError {
 export async function getAppInfo(): Promise<AppInfoResponse> {
   try {
     return await invoke<AppInfoResponse>("get_app_info");
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function saveGraphSnapshot(
+  projectPath: string,
+  snapshot: GraphSnapshotInput,
+): Promise<void> {
+  try {
+    await invoke<void>("save_graph_snapshot", {
+      request: { projectPath, snapshot },
+    });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function listGraphSnapshots(
+  projectPath: string,
+): Promise<GraphSnapshotSummary[]> {
+  try {
+    return await invoke<GraphSnapshotSummary[]>("list_graph_snapshots", {
+      request: { projectPath },
+    });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function getGraphSnapshot(
+  projectPath: string,
+  snapshotId: string,
+): Promise<GraphSnapshot | null> {
+  try {
+    return await invoke<GraphSnapshot | null>("get_graph_snapshot", {
+      request: { projectPath, snapshotId },
+    });
   } catch (error) {
     throw toAppCommandError(error);
   }

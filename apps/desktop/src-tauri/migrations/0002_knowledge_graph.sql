@@ -18,7 +18,7 @@ CREATE TABLE graph_nodes (
     snapshot_id TEXT NOT NULL,
     node_id TEXT NOT NULL CHECK(length(node_id) BETWEEN 1 AND 512),
     node_type TEXT NOT NULL CHECK(node_type IN (
-        'project', 'module', 'directory', 'file', 'package', 'class', 'interface',
+        'project', 'module', 'directory', 'file', 'package', 'symbol', 'class', 'interface',
         'function', 'method', 'apiEndpoint', 'dto', 'dependency', 'externalService'
     )),
     name TEXT NOT NULL,
