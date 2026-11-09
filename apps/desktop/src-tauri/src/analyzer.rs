@@ -118,6 +118,7 @@ pub enum RelationshipKind {
     Calls,
     Implements,
     Extends,
+    Inherits,
     Imports,
     Injects,
     Exposes,

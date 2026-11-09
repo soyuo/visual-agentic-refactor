@@ -110,6 +110,7 @@ fn is_kotlin_path(relative_path: &str) -> bool {
 }
 
 fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
+    let line_index = LineIndex::new(input.source);
     let root = tree.root_node();
     let package_node = find_child_by_kind(root, "package_header");
     let package_context = package_node.map(|node| {
@@ -127,7 +128,7 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
             name: name.clone(),
             kind: SymbolKind::Package,
             parent_id: None,
-            location: source_range(input.relative_path, input.source, node),
+            location: source_range(input.relative_path, input.source, &line_index, node),
             confidence: Confidence::Confirmed,
         };
         (
@@ -168,7 +169,7 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
     let mut overflowed_diagnostics = false;
     while let Some((node, context)) = stack.pop() {
         if node.kind() == "import" {
-            if let Some(import) = parse_import(input, node) {
+            if let Some(import) = parse_import(input, node, &line_index) {
                 output.imports.push(import);
             }
         }
@@ -185,7 +186,12 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
                     } else {
                         "Kotlin syntax could not be parsed completely.".into()
                     },
-                    location: Some(source_range(input.relative_path, input.source, node)),
+                    location: Some(source_range(
+                        input.relative_path,
+                        input.source,
+                        &line_index,
+                        node,
+                    )),
                 },
             );
         }
@@ -201,15 +207,20 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
                         "Kotlin `{}` is not represented in the current symbol model.",
                         node.kind()
                     ),
-                    location: Some(source_range(input.relative_path, input.source, node)),
+                    location: Some(source_range(
+                        input.relative_path,
+                        input.source,
+                        &line_index,
+                        node,
+                    )),
                 },
             );
         }
 
         let mut child_context = context.clone();
-        if let Some((symbol, symbol_context)) = make_symbol(input, node, &context) {
-            add_annotations(input, node, &symbol, &mut output);
-            add_inheritance(input, node, &symbol, &mut output);
+        if let Some((symbol, symbol_context)) = make_symbol(input, &line_index, node, &context) {
+            add_annotations(input, &line_index, node, &symbol, &mut output);
+            add_inheritance(input, &line_index, node, &symbol, &mut output);
             output.symbols.push(symbol);
             child_context.parent = Some(symbol_context.clone());
             if matches!(
@@ -255,6 +266,7 @@ fn push_diagnostic(
 
 fn make_symbol(
     input: &AnalyzerInput<'_>,
+    line_index: &LineIndex,
     node: Node<'_>,
     context: &WalkContext,
 ) -> Option<(AnalyzerSymbol, SymbolContext)> {
@@ -328,7 +340,7 @@ fn make_symbol(
         name: name.clone(),
         kind,
         parent_id: parent.map(|parent| parent.id.clone()),
-        location: source_range(input.relative_path, input.source, node),
+        location: source_range(input.relative_path, input.source, line_index, node),
         confidence: Confidence::Confirmed,
     };
     Some((symbol, SymbolContext { id, name, kind }))
@@ -336,6 +348,7 @@ fn make_symbol(
 
 fn add_annotations(
     input: &AnalyzerInput<'_>,
+    line_index: &LineIndex,
     declaration: Node<'_>,
     symbol: &AnalyzerSymbol,
     output: &mut AnalysisOutput,
@@ -352,7 +365,7 @@ fn add_annotations(
                     source_symbol_id: symbol.id.clone(),
                     target_symbol_id: None,
                     target_name: Some(name),
-                    location: source_range(input.relative_path, input.source, node),
+                    location: source_range(input.relative_path, input.source, line_index, node),
                     confidence: Confidence::Confirmed,
                 });
             }
@@ -366,6 +379,7 @@ fn add_annotations(
 
 fn add_inheritance(
     input: &AnalyzerInput<'_>,
+    line_index: &LineIndex,
     declaration: Node<'_>,
     symbol: &AnalyzerSymbol,
     output: &mut AnalysisOutput,
@@ -384,11 +398,11 @@ fn add_inheritance(
         if node.kind() == "delegation_specifier" {
             if let Some(name) = delegation_target_name(node, input.source) {
                 output.relationships.push(AnalyzerRelationship {
-                    kind: RelationshipKind::Extends,
+                    kind: RelationshipKind::Inherits,
                     source_symbol_id: symbol.id.clone(),
                     target_symbol_id: None,
                     target_name: Some(name),
-                    location: source_range(input.relative_path, input.source, node),
+                    location: source_range(input.relative_path, input.source, line_index, node),
                     confidence: Confidence::Inferred,
                 });
             }
@@ -400,7 +414,11 @@ fn add_inheritance(
     }
 }
 
-fn parse_import(input: &AnalyzerInput<'_>, node: Node<'_>) -> Option<AnalyzerImport> {
+fn parse_import(
+    input: &AnalyzerInput<'_>,
+    node: Node<'_>,
+    line_index: &LineIndex,
+) -> Option<AnalyzerImport> {
     let raw = node_text(node, input.source)
         .trim()
         .strip_prefix("import")?
@@ -417,7 +435,7 @@ fn parse_import(input: &AnalyzerInput<'_>, node: Node<'_>) -> Option<AnalyzerImp
         name,
         alias,
         is_wildcard,
-        location: source_range(input.relative_path, input.source, node),
+        location: source_range(input.relative_path, input.source, line_index, node),
     })
 }
 
@@ -525,31 +543,50 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
 }
 
-fn source_range(relative_path: &str, source: &str, node: Node<'_>) -> SourceRange {
+struct LineIndex {
+    starts: Vec<u32>,
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let mut starts = vec![0];
+        starts.extend(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(offset, byte)| (byte == b'\n').then_some((offset + 1) as u32)),
+        );
+        Self { starts }
+    }
+
+    fn unicode_column(&self, source: &str, point: Point) -> u32 {
+        let line_start = self
+            .starts
+            .get(point.row)
+            .copied()
+            .map_or(source.len(), |offset| offset as usize);
+        let column_end = line_start.saturating_add(point.column).min(source.len());
+        source
+            .get(line_start..column_end)
+            .map_or(1, |text| text.chars().count() as u32 + 1)
+    }
+}
+
+fn source_range(
+    relative_path: &str,
+    source: &str,
+    line_index: &LineIndex,
+    node: Node<'_>,
+) -> SourceRange {
     SourceRange {
         relative_path: relative_path.to_owned(),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
         start_line: node.start_position().row as u32 + 1,
-        start_column: unicode_column(source, node.start_position()),
+        start_column: line_index.unicode_column(source, node.start_position()),
         end_line: node.end_position().row as u32 + 1,
-        end_column: unicode_column(source, node.end_position()),
+        end_column: line_index.unicode_column(source, node.end_position()),
     }
-}
-
-fn unicode_column(source: &str, point: Point) -> u32 {
-    let line_start = if point.row == 0 {
-        0
-    } else {
-        source
-            .match_indices('\n')
-            .nth(point.row - 1)
-            .map_or(source.len(), |(newline, _)| newline + 1)
-    };
-    let column_end = line_start.saturating_add(point.column).min(source.len());
-    source
-        .get(line_start..column_end)
-        .map_or(1, |text| text.chars().count() as u32 + 1)
 }
 
 #[cfg(test)]
@@ -632,9 +669,15 @@ mod tests {
                 .any(|symbol| symbol.name == "createWorker" && symbol.kind == SymbolKind::Function)
         );
         assert!(output.relationships.iter().any(|relationship| {
-            relationship.kind == RelationshipKind::Extends
+            relationship.kind == RelationshipKind::Inherits
                 && relationship.target_name.as_deref() == Some("Runnable")
         }));
+        assert!(
+            output
+                .relationships
+                .iter()
+                .all(|relationship| relationship.kind != RelationshipKind::Extends)
+        );
         assert!(output.relationships.iter().any(|relationship| {
             relationship.kind == RelationshipKind::AnnotatedBy
                 && relationship.target_name.as_deref() == Some("ServiceMarker")
@@ -687,6 +730,7 @@ mod tests {
         assert_eq!(function.location.start_line, 2);
         assert_eq!(function.location.start_column, 1);
         assert_eq!(function.location.end_line, 2);
+        assert_eq!(function.location.end_column, 18);
         assert_eq!(function.location.start_byte, "// 한\n".len());
     }
 
