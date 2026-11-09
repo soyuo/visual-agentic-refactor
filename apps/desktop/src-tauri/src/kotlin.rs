@@ -434,6 +434,7 @@ fn parse_import(
     (!name.is_empty()).then(|| AnalyzerImport {
         name,
         alias,
+        is_static: false,
         is_wildcard,
         location: source_range(input.relative_path, input.source, line_index, node),
     })
@@ -624,6 +625,7 @@ mod tests {
         assert_eq!(output.imports.len(), 2);
         assert_eq!(output.imports[0].name, "sample.api.Service");
         assert_eq!(output.imports[0].alias.as_deref(), Some("ApiService"));
+        assert!(!output.imports[0].is_static);
         assert!(output.imports[1].is_wildcard);
         assert_eq!(output.imports[1].name, "sample.model");
         assert!(
