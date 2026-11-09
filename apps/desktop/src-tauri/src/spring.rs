@@ -833,7 +833,40 @@ fn annotation_arguments_map(arguments: &str) -> HashMap<String, String> {
 }
 
 fn literal_path_values(raw: &str) -> Vec<Option<String>> {
-    let literals = quoted_string_literals(raw);
+    let mut characters = raw.chars().peekable();
+    let mut literals = Vec::new();
+    while let Some(character) = characters.next() {
+        if character.is_whitespace() || matches!(character, ',' | '{' | '}' | '[' | ']' | '(' | ')')
+        {
+            continue;
+        }
+        if !matches!(character, '"' | '\'') {
+            return vec![None];
+        }
+
+        let quote = character;
+        let mut literal = String::new();
+        let mut closed = false;
+        while let Some(character) = characters.next() {
+            if character == '\\' {
+                if let Some(escaped) = characters.next() {
+                    literal.push(escaped);
+                } else {
+                    return vec![None];
+                }
+            } else if character == quote {
+                closed = true;
+                break;
+            } else {
+                literal.push(character);
+            }
+        }
+        if !closed {
+            return vec![None];
+        }
+        literals.push(Some(literal));
+    }
+
     if literals.is_empty() {
         if raw.trim().is_empty() {
             vec![Some(String::new())]
@@ -841,33 +874,8 @@ fn literal_path_values(raw: &str) -> Vec<Option<String>> {
             vec![None]
         }
     } else {
-        literals.into_iter().map(Some).collect()
+        literals
     }
-}
-
-fn quoted_string_literals(input: &str) -> Vec<String> {
-    let mut literals = Vec::new();
-    let mut active = None;
-    let mut escaped = false;
-    let mut current = String::new();
-    for character in input.chars() {
-        if let Some(quote) = active {
-            if escaped {
-                current.push(character);
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == quote {
-                literals.push(std::mem::take(&mut current));
-                active = None;
-            } else {
-                current.push(character);
-            }
-        } else if matches!(character, '"' | '\'') {
-            active = Some(character);
-        }
-    }
-    literals
 }
 
 fn parse_http_methods(raw: &str) -> Vec<String> {
@@ -1983,6 +1991,45 @@ class DynamicRoutes {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| { diagnostic.code == "dynamic_route_registration_unknown" })
+        );
+    }
+
+    #[test]
+    fn marks_mixed_literal_and_constant_routes_unknown() {
+        let source = r#"
+package sample;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+@RestController
+class ItemController {
+    static final String PATH_PREFIX = "/api";
+    @GetMapping(PATH_PREFIX + "/items")
+    public String list() { return "items"; }
+}
+"#;
+        let snapshot = analyze_spring_sources(
+            "snapshot-mixed-route-expression",
+            &[SpringSourceFile {
+                relative_path: "src/main/java/sample/ItemController.java",
+                source,
+                language: SourceLanguage::Java,
+            }],
+        )
+        .unwrap();
+        let endpoint = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.node_type == GraphNodeType::ApiEndpoint)
+            .expect("route candidate");
+
+        assert!(endpoint.metadata["path"].is_null());
+        assert_eq!(endpoint.confidence, Confidence::Unknown);
+        assert_eq!(snapshot.completeness, GraphCompleteness::Partial);
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "unresolved_route_expression")
         );
     }
 
