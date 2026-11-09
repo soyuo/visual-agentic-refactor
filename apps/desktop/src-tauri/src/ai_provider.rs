@@ -233,13 +233,14 @@ pub fn ensure_not_cancelled(task: &TaskControl) -> Result<(), ProviderError> {
 
 /// Provider implementations own transport, but share request, response,
 /// cancellation, and retry contracts.
+#[async_trait::async_trait]
 pub trait AiProvider: Send + Sync {
     fn descriptor(&self) -> ProviderDescriptor;
 
     /// The caller must obtain user approval before invoking an external adapter.
     /// Implementations must validate the request and observe cancellation before
     /// sending and before every retry. Error messages must be sanitized.
-    fn review(
+    async fn review(
         &self,
         request: &ReviewRequest,
         task: &TaskControl,
@@ -258,12 +259,13 @@ mod tests {
         descriptor: ProviderDescriptor,
     }
 
+    #[async_trait::async_trait]
     impl AiProvider for FakeProvider {
         fn descriptor(&self) -> ProviderDescriptor {
             self.descriptor.clone()
         }
 
-        fn review(
+        async fn review(
             &self,
             request: &ReviewRequest,
             task: &TaskControl,
@@ -318,8 +320,11 @@ mod tests {
         let provider = fixture_provider(Ok(response.clone()));
         let task = AppState::default().register_task().expect("register task");
 
-        let actual = provider
-            .review(&fixture_request(), &task, RetryPolicy::default())
+        let actual = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(provider.review(&fixture_request(), &task, RetryPolicy::default()))
             .expect("fixture review");
 
         assert!(
@@ -349,7 +354,12 @@ mod tests {
         let provider = fixture_provider(Err(expected.clone()));
         let task = AppState::default().register_task().expect("register task");
 
-        let actual = match provider.review(&fixture_request(), &task, RetryPolicy::default()) {
+        let actual = match tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(provider.review(&fixture_request(), &task, RetryPolicy::default()))
+        {
             Err(error) => error,
             Ok(_) => panic!("fixture provider should return its error"),
         };
@@ -425,7 +435,12 @@ mod tests {
             usage: ProviderUsage::default(),
         }));
 
-        let error = match provider.review(&fixture_request(), &task, RetryPolicy::default()) {
+        let error = match tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(provider.review(&fixture_request(), &task, RetryPolicy::default()))
+        {
             Err(error) => error,
             Ok(_) => panic!("cancelled request must not reach provider"),
         };

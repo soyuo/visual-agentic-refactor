@@ -86,6 +86,18 @@ pub fn is_configured(provider: CredentialProvider) -> Result<bool, CommandError>
     }
 }
 
+/// Reads a credential only for trusted Rust provider adapters. This value must
+/// never cross the Tauri command boundary or be included in an error message.
+pub(crate) fn read_for_provider(
+    provider: CredentialProvider,
+) -> Result<Option<String>, CommandError> {
+    match entry(provider)?.get_password() {
+        Ok(credential) => Ok(Some(credential)),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(error) => Err(map_store_error(error)),
+    }
+}
+
 pub fn delete(provider: CredentialProvider) -> Result<(), CommandError> {
     match entry(provider)?.delete_credential() {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
