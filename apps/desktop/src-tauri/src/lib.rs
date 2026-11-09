@@ -36,6 +36,7 @@ pub fn run() {
             commands::credentials::list_provider_credentials,
             commands::credentials::save_provider_credential,
             commands::credentials::delete_provider_credential,
+            commands::findings::validate_review_findings,
             commands::context::preview_review_context,
             commands::git::get_git_status,
             commands::project::open_project,
