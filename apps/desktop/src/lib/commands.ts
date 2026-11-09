@@ -137,6 +137,16 @@ export interface GraphSnapshot extends GraphSnapshotSummary {
   diagnostics: GraphDiagnostic[];
 }
 
+export interface AnalyzeSpringProjectResponse {
+  projectPath: string;
+  snapshotId: string;
+  completeness: GraphCompleteness;
+  sourceFileCount: number;
+  nodeCount: number;
+  edgeCount: number;
+  diagnosticCount: number;
+}
+
 export interface ScanOptions {
   /** Gitignore-style rules; a leading `!` can re-include a default exclusion. */
   ignorePatterns?: string[];
@@ -319,6 +329,18 @@ export async function getGraphSnapshot(
   try {
     return await invoke<GraphSnapshot | null>("get_graph_snapshot", {
       request: { projectPath, snapshotId },
+    });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function analyzeSpringProject(
+  request: ScanProjectRequest,
+): Promise<AnalyzeSpringProjectResponse> {
+  try {
+    return await invoke<AnalyzeSpringProjectResponse>("analyze_spring_project", {
+      request,
     });
   } catch (error) {
     throw toAppCommandError(error);
