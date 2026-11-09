@@ -43,6 +43,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [contextPreview, setContextPreview] = createSignal<ReviewContextPreview | null>(null);
   const [previewLoading, setPreviewLoading] = createSignal(false);
   const [previewError, setPreviewError] = createSignal<string | null>(null);
+  let previewRequestVersion = 0;
 
   const selectedFile = () => {
     const entry = props.selectedEntry;
@@ -68,11 +69,21 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const scopeLabel = () => scopeKind() === "graphNode"
     ? selectedGraphNode()?.qualifiedName ?? selectedGraphNode()?.name ?? graphNodePath()
     : selectedFile()?.relativePath;
+  const scopeKey = () => JSON.stringify([
+    props.project?.path ?? "",
+    selectedProvider(),
+    scopeKind(),
+    selectedFile()?.relativePath ?? "",
+    props.selectedGraphNodeId ?? "",
+    props.graphSnapshot?.snapshotId ?? "",
+  ]);
 
   createEffect(() => {
-    const scopeKey = `${props.project?.path ?? ""}:${selectedProvider()}:${scopeKind()}:${selectedFile()?.relativePath ?? ""}:${props.selectedGraphNodeId ?? ""}`;
-    if (scopeKey !== consentScopeKey()) {
-      setConsentScopeKey(scopeKey);
+    const currentScopeKey = scopeKey();
+    if (currentScopeKey !== consentScopeKey()) {
+      previewRequestVersion += 1;
+      setPreviewLoading(false);
+      setConsentScopeKey(currentScopeKey);
       setConsentDecision(null);
       setConsentDialogOpen(false);
       setContextPreview(null);
@@ -134,20 +145,27 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   async function loadContextPreview() {
     const scope = currentScope();
     if (!props.project || !scope || previewLoading()) return;
+    const requestVersion = ++previewRequestVersion;
+    const requestScopeKey = scopeKey();
     setPreviewLoading(true);
     setPreviewError(null);
     setContextPreview(null);
     setConsentDecision(null);
     try {
-      setContextPreview(await previewReviewContext({
+      const preview = await previewReviewContext({
         projectPath: props.project.path,
         scope,
         maxContextTokens: 32_000,
-      }));
+      });
+      if (requestVersion === previewRequestVersion && requestScopeKey === scopeKey()) {
+        setContextPreview(preview);
+      }
     } catch (cause: unknown) {
-      setPreviewError(toAppCommandError(cause).message);
+      if (requestVersion === previewRequestVersion && requestScopeKey === scopeKey()) {
+        setPreviewError(toAppCommandError(cause).message);
+      }
     } finally {
-      setPreviewLoading(false);
+      if (requestVersion === previewRequestVersion) setPreviewLoading(false);
     }
   }
 
