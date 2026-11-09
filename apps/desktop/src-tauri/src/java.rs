@@ -11,6 +11,7 @@ use crate::analyzer::{
 
 const MAX_SOURCE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_DIAGNOSTICS: usize = 256;
+const MAX_RELATIONSHIPS: usize = 50_000;
 
 pub struct JavaAnalyzer;
 
@@ -35,13 +36,15 @@ impl Analyzer for JavaAnalyzer {
                     Relationships,
                     SupportLevel::Partial,
                     Some(
-                        "Inheritance targets are reported by syntax; type resolution is not performed.",
+                        "Call and inheritance targets are syntax candidates; overload and type resolution is not performed.",
                     ),
                 ),
                 capability(
                     ControlFlow,
-                    SupportLevel::Unsupported,
-                    Some("Function-body control-flow analysis is not implemented."),
+                    SupportLevel::Partial,
+                    Some(
+                        "Conditional, loop, and exception constructs are reported as syntax candidates; a full control-flow graph is not built.",
+                    ),
                 ),
             ],
         }
@@ -145,6 +148,7 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
     }
 
     let mut overflowed_diagnostics = false;
+    let mut overflowed_relationships = false;
     while let Some((node, parent)) = stack.pop() {
         if node.kind() == "import_declaration" {
             if let Some(import) = parse_import(input, node, &line_index) {
@@ -201,8 +205,22 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
         let symbols = make_symbols(input, &line_index, node, parent.as_ref());
         let mut child_parent = parent.clone();
         for (symbol, symbol_context) in symbols {
-            add_annotations(input, &line_index, node, &symbol, &mut output);
-            add_type_relationships(input, &line_index, node, &symbol, &mut output);
+            add_annotations(
+                input,
+                &line_index,
+                node,
+                &symbol,
+                &mut output,
+                &mut overflowed_relationships,
+            );
+            add_type_relationships(
+                input,
+                &line_index,
+                node,
+                &symbol,
+                &mut output,
+                &mut overflowed_relationships,
+            );
             output.symbols.push(symbol);
             if matches!(
                 symbol_context.kind,
@@ -218,6 +236,15 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
             }
         }
 
+        add_call_and_flow_relationships(
+            input,
+            &line_index,
+            node,
+            parent.as_ref(),
+            &mut output,
+            &mut overflowed_relationships,
+        );
+
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
         for child in children.into_iter().rev() {
@@ -225,6 +252,20 @@ fn analyze_tree(input: &AnalyzerInput<'_>, tree: &Tree) -> AnalysisOutput {
         }
     }
 
+    if overflowed_relationships {
+        push_diagnostic(
+            &mut output,
+            &mut overflowed_diagnostics,
+            AnalyzerDiagnostic {
+                code: DiagnosticCode::ResourceLimitReached,
+                severity: DiagnosticSeverity::Warning,
+                message: format!(
+                    "Only the first {MAX_RELATIONSHIPS} Java relationships are reported."
+                ),
+                location: None,
+            },
+        );
+    }
     if overflowed_diagnostics {
         output.diagnostics.push(AnalyzerDiagnostic {
             code: DiagnosticCode::ResourceLimitReached,
@@ -415,6 +456,7 @@ fn add_type_relationships(
     declaration: Node<'_>,
     symbol: &AnalyzerSymbol,
     output: &mut AnalysisOutput,
+    overflowed_relationships: &mut bool,
 ) {
     match declaration.kind() {
         "class_declaration" => {
@@ -426,6 +468,7 @@ fn add_type_relationships(
                     symbol,
                     RelationshipKind::Extends,
                     output,
+                    overflowed_relationships,
                 );
             }
             if let Some(interfaces) = declaration.child_by_field_name("interfaces") {
@@ -436,6 +479,7 @@ fn add_type_relationships(
                     symbol,
                     RelationshipKind::Implements,
                     output,
+                    overflowed_relationships,
                 );
             }
         }
@@ -448,6 +492,7 @@ fn add_type_relationships(
                     symbol,
                     RelationshipKind::Extends,
                     output,
+                    overflowed_relationships,
                 );
             }
         }
@@ -460,6 +505,7 @@ fn add_type_relationships(
                     symbol,
                     RelationshipKind::Implements,
                     output,
+                    overflowed_relationships,
                 );
             }
         }
@@ -474,6 +520,7 @@ fn push_type_list_relationships(
     symbol: &AnalyzerSymbol,
     kind: RelationshipKind,
     output: &mut AnalysisOutput,
+    overflowed_relationships: &mut bool,
 ) {
     let type_list = if list.kind() == "type_list" {
         list
@@ -485,7 +532,15 @@ fn push_type_list_relationships(
     };
     let mut cursor = type_list.walk();
     for type_node in type_list.named_children(&mut cursor) {
-        push_type_relationship(input, line_index, type_node, symbol, kind, output);
+        push_type_relationship(
+            input,
+            line_index,
+            type_node,
+            symbol,
+            kind,
+            output,
+            overflowed_relationships,
+        );
     }
 }
 
@@ -496,18 +551,23 @@ fn push_type_relationship(
     symbol: &AnalyzerSymbol,
     kind: RelationshipKind,
     output: &mut AnalysisOutput,
+    overflowed_relationships: &mut bool,
 ) {
     let Some(name_node) = find_type_name_node(type_node) else {
         return;
     };
-    output.relationships.push(AnalyzerRelationship {
-        kind,
-        source_symbol_id: symbol.id.clone(),
-        target_symbol_id: None,
-        target_name: Some(node_text(name_node, input.source).to_owned()),
-        location: source_range(input.relative_path, input.source, line_index, name_node),
-        confidence: Confidence::Inferred,
-    });
+    push_relationship(
+        output,
+        overflowed_relationships,
+        AnalyzerRelationship {
+            kind,
+            source_symbol_id: symbol.id.clone(),
+            target_symbol_id: None,
+            target_name: Some(candidate_name(node_text(name_node, input.source))),
+            location: source_range(input.relative_path, input.source, line_index, name_node),
+            confidence: Confidence::Inferred,
+        },
+    );
 }
 
 fn find_type_name_node<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
@@ -529,6 +589,7 @@ fn add_annotations(
     declaration: Node<'_>,
     symbol: &AnalyzerSymbol,
     output: &mut AnalysisOutput,
+    overflowed_relationships: &mut bool,
 ) {
     let Some(modifiers) = find_child_by_kind(declaration, "modifiers") else {
         return;
@@ -540,20 +601,187 @@ fn add_annotations(
                 .child_by_field_name("name")
                 .map(|name| node_text(name, input.source).to_owned())
             {
-                output.relationships.push(AnalyzerRelationship {
-                    kind: RelationshipKind::AnnotatedBy,
-                    source_symbol_id: symbol.id.clone(),
-                    target_symbol_id: None,
-                    target_name: Some(name),
-                    location: source_range(input.relative_path, input.source, line_index, node),
-                    confidence: Confidence::Confirmed,
-                });
+                push_relationship(
+                    output,
+                    overflowed_relationships,
+                    AnalyzerRelationship {
+                        kind: RelationshipKind::AnnotatedBy,
+                        source_symbol_id: symbol.id.clone(),
+                        target_symbol_id: None,
+                        target_name: Some(candidate_name(&name)),
+                        location: source_range(input.relative_path, input.source, line_index, node),
+                        confidence: Confidence::Confirmed,
+                    },
+                );
             }
             continue;
         }
         let mut cursor = node.walk();
         let children: Vec<_> = node.named_children(&mut cursor).collect();
         stack.extend(children.into_iter().rev());
+    }
+}
+
+fn add_call_and_flow_relationships(
+    input: &AnalyzerInput<'_>,
+    line_index: &LineIndex,
+    node: Node<'_>,
+    scope: Option<&SymbolContext>,
+    output: &mut AnalysisOutput,
+    overflowed_relationships: &mut bool,
+) {
+    let Some(scope) = scope.filter(|scope| {
+        matches!(
+            scope.kind,
+            SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Function
+        )
+    }) else {
+        return;
+    };
+
+    let candidate = match node.kind() {
+        "method_invocation" | "object_creation_expression" | "explicit_constructor_invocation" => {
+            let Some(target_name) = call_target_name(node, input.source) else {
+                return;
+            };
+            (
+                RelationshipKind::Calls,
+                Some(target_name),
+                Confidence::Inferred,
+            )
+        }
+        "if_statement" => (
+            RelationshipKind::Controls,
+            Some("if".into()),
+            Confidence::Confirmed,
+        ),
+        "switch_statement" | "switch_expression" => (
+            RelationshipKind::Controls,
+            Some("switch".into()),
+            Confidence::Confirmed,
+        ),
+        "for_statement" => (
+            RelationshipKind::Controls,
+            Some("for".into()),
+            Confidence::Confirmed,
+        ),
+        "enhanced_for_statement" => (
+            RelationshipKind::Controls,
+            Some("enhanced-for".into()),
+            Confidence::Confirmed,
+        ),
+        "while_statement" => (
+            RelationshipKind::Controls,
+            Some("while".into()),
+            Confidence::Confirmed,
+        ),
+        "do_statement" => (
+            RelationshipKind::Controls,
+            Some("do-while".into()),
+            Confidence::Confirmed,
+        ),
+        "try_statement" => (
+            RelationshipKind::Controls,
+            Some("try".into()),
+            Confidence::Confirmed,
+        ),
+        "catch_clause" => (
+            RelationshipKind::Controls,
+            Some("catch".into()),
+            Confidence::Confirmed,
+        ),
+        "finally_clause" => (
+            RelationshipKind::Controls,
+            Some("finally".into()),
+            Confidence::Confirmed,
+        ),
+        "synchronized_statement" => (
+            RelationshipKind::Controls,
+            Some("synchronized".into()),
+            Confidence::Confirmed,
+        ),
+        "throw_statement" => (
+            RelationshipKind::Throws,
+            first_named_child(node)
+                .map(|expression| candidate_name(node_text(expression, input.source))),
+            Confidence::Inferred,
+        ),
+        _ => return,
+    };
+
+    push_relationship(
+        output,
+        overflowed_relationships,
+        AnalyzerRelationship {
+            kind: candidate.0,
+            source_symbol_id: scope.id.clone(),
+            target_symbol_id: None,
+            target_name: candidate.1,
+            location: source_range(input.relative_path, input.source, line_index, node),
+            confidence: candidate.2,
+        },
+    );
+}
+
+fn call_target_name(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "method_invocation" => {
+            let name = node.child_by_field_name("name")?;
+            let method_name = candidate_name(node_text(name, source));
+            let target_name = node
+                .child_by_field_name("object")
+                .map(|object| {
+                    let receiver = candidate_name(node_text(object, source));
+                    format!("{receiver}.{method_name}")
+                })
+                .unwrap_or(method_name);
+            Some(candidate_name(&target_name))
+        }
+        "object_creation_expression" => node
+            .child_by_field_name("type")
+            .map(|target| candidate_name(node_text(target, source))),
+        "explicit_constructor_invocation" => Some(candidate_name(
+            node_text(node, source).split('(').next().unwrap_or(""),
+        )),
+        _ => None,
+    }
+}
+
+fn first_named_child(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).next()
+}
+
+fn candidate_name(value: &str) -> String {
+    let mut name = String::with_capacity(128);
+    let mut previous_whitespace = false;
+    for character in value.chars().take(512) {
+        if character.is_whitespace() {
+            previous_whitespace = true;
+            continue;
+        }
+        let separator_length = usize::from(previous_whitespace && !name.is_empty());
+        if name.len() + separator_length + character.len_utf8() > 128 {
+            break;
+        }
+        if separator_length > 0 {
+            name.push(' ');
+        }
+        name.push(character);
+        previous_whitespace = false;
+    }
+    name
+}
+
+fn push_relationship(
+    output: &mut AnalysisOutput,
+    overflowed: &mut bool,
+    relationship: AnalyzerRelationship,
+) {
+    if output.relationships.len() < MAX_RELATIONSHIPS {
+        output.relationships.push(relationship);
+    } else {
+        *overflowed = true;
     }
 }
 
@@ -768,6 +996,113 @@ mod tests {
             relationship.kind == RelationshipKind::AnnotatedBy
                 && relationship.target_name.as_deref() == Some("Override")
         }));
+    }
+
+    #[test]
+    fn extracts_call_control_and_exception_candidates_within_scope() {
+        let output = analyze(
+            "class Worker {\n\
+             Widget current = create();\n\
+             void run(boolean flag) {\n\
+                 // fakeCall()\n\
+                 String text = \"fakeCall()\";\n\
+                 helper();\n\
+                 client.fetch(\"item\");\n\
+                 new Widget();\n\
+                 if (flag) helper();\n\
+                 switch (state) { case READY: helper(); break; default: break; }\n\
+                 for (int index = 0; index < 1; index++) helper();\n\
+                 for (String item : items) helper();\n\
+                 while (flag) helper();\n\
+                 do { helper(); } while (flag);\n\
+                 try { throw new IllegalStateException(); }\n\
+                 catch (RuntimeException error) { recover(error); }\n\
+                 finally { cleanup(); }\n\
+                 synchronized (this) { helper(); }\n\
+             }\n\
+             }",
+        );
+        let run_id = output
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "run")
+            .expect("method symbol")
+            .id
+            .clone();
+
+        let calls: Vec<_> = output
+            .relationships
+            .iter()
+            .filter(|relationship| relationship.kind == RelationshipKind::Calls)
+            .collect();
+        for target in ["helper", "client.fetch", "Widget", "IllegalStateException"] {
+            assert!(
+                calls.iter().any(|call| {
+                    call.target_name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with(target))
+                }),
+                "missing call candidate {target}; got {:?}",
+                calls
+                    .iter()
+                    .map(|call| call.target_name.as_deref())
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            !calls
+                .iter()
+                .any(|call| { matches!(call.target_name.as_deref(), Some("fakeCall" | "create")) })
+        );
+        assert!(calls.iter().all(|call| call.source_symbol_id == run_id));
+        assert!(calls.iter().all(|call| call.target_symbol_id.is_none()));
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.confidence == Confidence::Inferred)
+        );
+
+        let controls: Vec<_> = output
+            .relationships
+            .iter()
+            .filter(|relationship| relationship.kind == RelationshipKind::Controls)
+            .collect();
+        for candidate in [
+            "if",
+            "switch",
+            "for",
+            "enhanced-for",
+            "while",
+            "do-while",
+            "try",
+            "catch",
+            "finally",
+            "synchronized",
+        ] {
+            assert!(
+                controls
+                    .iter()
+                    .any(|edge| edge.target_name.as_deref() == Some(candidate)),
+                "missing control candidate {candidate}"
+            );
+        }
+        assert!(controls.iter().all(|edge| edge.source_symbol_id == run_id));
+        assert!(output.relationships.iter().any(|relationship| {
+            relationship.kind == RelationshipKind::Throws
+                && relationship.source_symbol_id == run_id
+                && relationship
+                    .target_name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("new IllegalStateException"))
+        }));
+        assert_eq!(output.completeness, AnalysisCompleteness::Complete);
+        let control_flow = JavaAnalyzer
+            .descriptor()
+            .capabilities
+            .into_iter()
+            .find(|capability| capability.feature == AnalysisFeature::ControlFlow)
+            .expect("control-flow capability");
+        assert_eq!(control_flow.support, SupportLevel::Partial);
     }
 
     #[test]
