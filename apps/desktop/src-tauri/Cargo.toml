@@ -27,6 +27,7 @@ ignore = "0.4"
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 tree-sitter = "0.25.10"
 tree-sitter-kotlin-ng = "1.1.0"
+tree-sitter-java = "0.23.5"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
