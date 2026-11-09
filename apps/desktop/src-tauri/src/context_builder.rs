@@ -9,6 +9,7 @@ const MAX_CONTEXT_TOKENS: u32 = 32_000;
 const MIN_CONTEXT_TOKENS: u32 = 128;
 const ESTIMATED_BYTES_PER_TOKEN: usize = 1;
 const CONTEXT_HEADER_BYTES: usize = 128;
+const TRUNCATION_MARKER: &str = "\n[… 일부 생략]";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -25,14 +26,27 @@ pub enum ReviewContextScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewContextPreview {
+    pub preview_id: String,
     pub context: String,
     pub estimated_tokens: u32,
     pub token_budget: u32,
     pub included_files: Vec<String>,
+    pub included_source_spans: Vec<RenderedSourceSpan>,
     pub omitted_items: Vec<String>,
     pub graph_snapshot_id: Option<String>,
     pub graph_completeness: Option<String>,
     pub token_estimate_note: String,
+}
+
+/// Full source line ranges that survived rendering and truncation in the preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedSourceSpan {
+    pub relative_path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// Redacted line text in this span, as it was shown in the preview.
+    pub visible_text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +72,7 @@ struct Section {
     title: String,
     path: Option<String>,
     content: String,
+    source_spans: Vec<RenderedSourceSpan>,
 }
 
 pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPreview, String> {
@@ -72,12 +87,15 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
         .sources
         .get(&scope_path)
         .ok_or_else(|| "선택한 소스 파일을 읽을 수 없습니다.".to_owned())?;
+    let selected_spans =
+        source_spans_for_range(&scope_path, selected_source, scope_range.as_ref(), 5);
     sections.push(Section {
         priority: 0,
         key: format!("selected:{scope_path}"),
         title: format!("선택 범위: {scope_path}"),
         path: Some(scope_path.clone()),
         content: render_selected_source(selected_source, scope_range.as_ref()),
+        source_spans: selected_spans,
     });
 
     for (path, rule) in inputs.rules {
@@ -90,6 +108,7 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
             title: format!("프로젝트 규칙: {path}"),
             path: Some(path.clone()),
             content: rule.clone(),
+            source_spans: Vec::new(),
         });
     }
 
@@ -101,6 +120,7 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
             title: "관련 심볼·관계·API 정보".to_owned(),
             path: None,
             content: related.summary,
+            source_spans: Vec::new(),
         });
     }
 
@@ -115,13 +135,15 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
     }
     for (path, ranges) in source_ranges {
         if let Some(source) = inputs.sources.get(&path) {
+            let (content, source_spans) = render_evidence(&path, source, &ranges);
             sections.push(Section {
                 priority: 3
                     + (5u8.saturating_sub(*inputs.source_priorities.get(&path).unwrap_or(&0))),
                 key: format!("evidence:{path}"),
                 title: format!("관련 소스 근거: {path}"),
                 path: Some(path),
-                content: render_evidence(source, &ranges),
+                content,
+                source_spans,
             });
         }
     }
@@ -133,6 +155,7 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
             title: "저장된 그래프 분석 언어".to_owned(),
             path: None,
             content: inputs.project_stack.join("\n"),
+            source_spans: Vec::new(),
         });
     }
     if !inputs.source_omissions.is_empty() {
@@ -142,6 +165,7 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
             title: "수집하지 못한 근거".to_owned(),
             path: None,
             content: inputs.source_omissions.join("\n"),
+            source_spans: Vec::new(),
         });
     }
 
@@ -170,6 +194,7 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
     let mut context = truncate_utf8(&header, byte_budget);
 
     let mut included_files = BTreeSet::new();
+    let mut included_source_spans = Vec::new();
     let mut omitted_items = inputs.source_omissions.to_vec();
     let mut seen = HashSet::new();
     for section in sections {
@@ -187,11 +212,14 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
             omitted_items.push(format!("문맥 예산 초과로 생략: {}", section.title));
             continue;
         }
-        if let Some(path) = section.path {
-            included_files.insert(path);
+        if let Some(path) = &section.path {
+            included_files.insert(path.clone());
         }
         if rendered.len() > remaining {
             let truncated = truncate_utf8(&rendered, remaining);
+            included_source_spans.extend(source_spans_surviving_truncation(
+                &section, &rendered, &truncated,
+            ));
             context.push_str(&truncated);
             omitted_items.push(format!(
                 "파일별 또는 전체 문맥 예산에 맞춰 일부 내용 생략: {}",
@@ -199,6 +227,7 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
             ));
             continue;
         }
+        included_source_spans.extend(section.source_spans);
         context.push_str(&rendered);
     }
 
@@ -211,10 +240,12 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
 
     let estimated_tokens = context.len().div_ceil(ESTIMATED_BYTES_PER_TOKEN) as u32;
     Ok(ReviewContextPreview {
+        preview_id: String::new(),
         context,
         estimated_tokens,
         token_budget,
         included_files: included_files.into_iter().collect(),
+        included_source_spans,
         omitted_items,
         graph_snapshot_id: inputs.graph.map(|graph| graph.summary.snapshot_id.clone()),
         graph_completeness: inputs.graph.map(|graph| format!("{:?}", graph.summary.completeness)),
@@ -400,25 +431,96 @@ fn render_selected_source(source: &str, range: Option<&SourceRange>) -> String {
     }
 }
 
-fn render_evidence(source: &str, ranges: &[SourceRange]) -> String {
+fn render_evidence(
+    path: &str,
+    source: &str,
+    ranges: &[SourceRange],
+) -> (String, Vec<RenderedSourceSpan>) {
     let mut chunks = Vec::new();
+    let mut source_spans = Vec::new();
     for range in ranges.iter().take(16) {
         let chunk = render_lines(source, range.start_line, range.end_line, 2);
         if !chunk.is_empty() && !chunks.contains(&chunk) {
             chunks.push(chunk);
+            if let Some((start_line, end_line)) =
+                line_span(source, range.start_line, range.end_line, 2)
+            {
+                source_spans.push(RenderedSourceSpan {
+                    relative_path: path.to_owned(),
+                    start_line,
+                    end_line,
+                    visible_text: visible_text_for_lines(source, start_line, end_line, true),
+                });
+            }
         }
     }
-    chunks.join("\n…\n")
+    (chunks.join("\n…\n"), source_spans)
+}
+
+fn source_spans_for_range(
+    path: &str,
+    source: &str,
+    range: Option<&SourceRange>,
+    padding: u32,
+) -> Vec<RenderedSourceSpan> {
+    let line_count = source.lines().count() as u32;
+    if line_count == 0 {
+        return Vec::new();
+    }
+    let (start_line, end_line) = match range {
+        Some(range) => match line_span(source, range.start_line, range.end_line, padding) {
+            Some(span) => span,
+            None => return Vec::new(),
+        },
+        None => (1, line_count),
+    };
+    vec![RenderedSourceSpan {
+        relative_path: path.to_owned(),
+        start_line,
+        end_line,
+        visible_text: visible_text_for_lines(source, start_line, end_line, range.is_some()),
+    }]
+}
+
+fn visible_text_for_lines(
+    source: &str,
+    start_line: u32,
+    end_line: u32,
+    line_numbered: bool,
+) -> String {
+    redact_secrets(source)
+        .lines()
+        .enumerate()
+        .filter(|(index, _)| *index + 1 >= start_line as usize && *index + 1 <= end_line as usize)
+        .map(|(index, line)| {
+            if line_numbered {
+                format!("{}: {line}", index + 1)
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn line_span(source: &str, start_line: u32, end_line: u32, padding: u32) -> Option<(u32, u32)> {
+    let line_count = source.lines().count() as u32;
+    if line_count == 0 || start_line == 0 || end_line < start_line {
+        return None;
+    }
+    let start = start_line.saturating_sub(padding).max(1);
+    let end = end_line.saturating_add(padding).min(line_count);
+    (start <= end).then_some((start, end))
 }
 
 fn render_lines(source: &str, start_line: u32, end_line: u32, padding: u32) -> String {
     let start = start_line.saturating_sub(padding).max(1) as usize;
     let end = end_line.saturating_add(padding).max(start_line) as usize;
-    source
+    redact_secrets(source)
         .lines()
         .enumerate()
         .filter(|(index, _)| index + 1 >= start && index + 1 <= end)
-        .map(|(index, line)| format!("{}: {}", index + 1, redact_secrets(line)))
+        .map(|(index, line)| format!("{}: {}", index + 1, line))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -546,19 +648,71 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_owned();
     }
-    let marker = "\n[… 일부 생략]";
-    if max_bytes <= marker.len() {
+    if max_bytes <= TRUNCATION_MARKER.len() {
         let mut end = max_bytes;
         while !text.is_char_boundary(end) {
             end = end.saturating_sub(1);
         }
         return text[..end].to_owned();
     }
-    let mut end = max_bytes.saturating_sub(marker.len());
+    let mut end = max_bytes.saturating_sub(TRUNCATION_MARKER.len());
     while !text.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }
-    format!("{}{}", &text[..end], marker)
+    format!("{}{}", &text[..end], TRUNCATION_MARKER)
+}
+
+fn source_spans_surviving_truncation(
+    section: &Section,
+    rendered: &str,
+    truncated: &str,
+) -> Vec<RenderedSourceSpan> {
+    if section.source_spans.is_empty() {
+        return Vec::new();
+    }
+    let rendered_prefix = format!("\n## {}\n", section.title);
+    let Some(rendered_content) = rendered
+        .strip_prefix(&rendered_prefix)
+        .and_then(|content| content.strip_suffix('\n'))
+    else {
+        return Vec::new();
+    };
+    let visible_end = if truncated.ends_with(TRUNCATION_MARKER) {
+        truncated.len().saturating_sub(TRUNCATION_MARKER.len())
+    } else {
+        truncated.len()
+    };
+    let visible_content_end = visible_end
+        .saturating_sub(rendered_prefix.len())
+        .min(rendered_content.len());
+    let mut source_spans = Vec::new();
+    let mut search_from = 0;
+    for span in &section.source_spans {
+        if span.visible_text.is_empty() || search_from >= rendered_content.len() {
+            continue;
+        }
+        let Some(relative_start) = rendered_content[search_from..].find(&span.visible_text) else {
+            continue;
+        };
+        let start = search_from + relative_start;
+        if start >= visible_content_end {
+            break;
+        }
+        let span_end = start + span.visible_text.len();
+        let visible_span_end = span_end.min(visible_content_end);
+        let visible_text = &rendered_content[start..visible_span_end];
+        if visible_text.is_empty() {
+            break;
+        }
+        let mut visible_span = span.clone();
+        visible_span.visible_text = visible_text.to_owned();
+        visible_span.end_line = visible_span
+            .start_line
+            .saturating_add(visible_text.matches('\n').count() as u32);
+        source_spans.push(visible_span);
+        search_from = span_end;
+    }
+    source_spans
 }
 
 fn scope_title(scope: &ReviewContextScope, path: &str, node: Option<&GraphNode>) -> String {
@@ -729,6 +883,9 @@ mod tests {
         assert!(preview.context.contains("graph node main"));
         assert!(preview.context.contains("GET /items"));
         assert!(preview.context.contains("fun main()"));
+        assert!(preview.included_source_spans.iter().any(|span| {
+            span.relative_path == "src/Main.kt" && span.visible_text.contains("fun main()")
+        }));
     }
 
     #[test]
@@ -747,10 +904,24 @@ mod tests {
             rules: &BTreeMap::new(),
             project_stack: &[],
             source_omissions: &["src/Related.kt: UTF-8 텍스트로 읽을 수 없습니다.".to_owned()],
-            max_context_tokens: 128,
+            max_context_tokens: 512,
         })
         .expect("context");
-        assert!(preview.context.len() <= 128 * ESTIMATED_BYTES_PER_TOKEN);
+        assert!(preview.context.len() <= 512 * ESTIMATED_BYTES_PER_TOKEN);
+        assert!(
+            preview
+                .included_files
+                .iter()
+                .any(|path| path == "src/Main.kt")
+        );
+        assert_eq!(preview.included_source_spans.len(), 1);
+        let visible_span = &preview.included_source_spans[0];
+        assert_eq!(visible_span.relative_path, "src/Main.kt");
+        assert_eq!(visible_span.start_line, 1);
+        assert_eq!(visible_span.end_line, 1);
+        assert!(!visible_span.visible_text.is_empty());
+        assert!(visible_span.visible_text.len() < 4_000);
+        assert!(preview.context.contains(&visible_span.visible_text));
         assert!(!preview.omitted_items.is_empty());
         assert!(
             preview
@@ -858,6 +1029,15 @@ mod tests {
                 "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----"
             ),
             "[REDACTED PRIVATE KEY]\n[REDACTED PRIVATE KEY]\n[REDACTED PRIVATE KEY]"
+        );
+        let private_key = "before\n-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----\nafter";
+        assert_eq!(
+            render_lines(private_key, 3, 3, 0),
+            "3: [REDACTED PRIVATE KEY]"
+        );
+        assert_eq!(
+            visible_text_for_lines(private_key, 3, 3, true),
+            "3: [REDACTED PRIVATE KEY]"
         );
     }
 }

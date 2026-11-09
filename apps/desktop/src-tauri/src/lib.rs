@@ -22,6 +22,7 @@ pub mod state;
 pub fn run() {
     tauri::Builder::default()
         .manage(state::AppState::default())
+        .manage(commands::context::ReviewContextPreviewState::default())
         .setup(|app| {
             use tauri::Manager;
 

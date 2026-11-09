@@ -7,6 +7,7 @@ use tauri::State;
 
 use crate::ai_provider::ReviewSelection;
 use crate::command_error::{CommandError, CommandErrorCode};
+use crate::commands::context::ReviewContextPreviewState;
 use crate::persistence::PersistenceState;
 use crate::review_finding::{FindingValidationResult, validate_provider_output};
 
@@ -14,9 +15,9 @@ use crate::review_finding::{FindingValidationResult, validate_provider_output};
 #[serde(rename_all = "camelCase")]
 pub struct ValidateReviewFindingsRequest {
     pub project_path: String,
+    pub preview_id: String,
     pub snapshot_id: String,
     pub selection: ReviewSelection,
-    pub included_files: Vec<String>,
     pub structured_output: Value,
 }
 
@@ -25,12 +26,10 @@ pub struct ValidateReviewFindingsRequest {
 pub fn validate_review_findings(
     request: ValidateReviewFindingsRequest,
     persistence: State<'_, PersistenceState>,
+    preview_state: State<'_, ReviewContextPreviewState>,
 ) -> Result<FindingValidationResult, CommandError> {
     if request.snapshot_id.trim().is_empty() {
         return Err(invalid("분석 스냅샷을 지정해야 합니다."));
-    }
-    if request.included_files.len() > 25 {
-        return Err(invalid("컨텍스트 포함 파일 수가 검증 한도를 초과했습니다."));
     }
     let requested_root = PathBuf::from(&request.project_path);
     if !requested_root.is_absolute() {
@@ -40,6 +39,18 @@ pub fn validate_review_findings(
         .map_err(|_| invalid("프로젝트 경로를 확인할 수 없습니다."))?;
     if !root.is_dir() {
         return Err(invalid("프로젝트 경로가 디렉터리가 아닙니다."));
+    }
+
+    let (included_files, included_source_spans) = preview_state
+        .validated_context(
+            &request.preview_id,
+            &root.to_string_lossy(),
+            &request.snapshot_id,
+            &request.selection,
+        )
+        .map_err(invalid)?;
+    if included_files.len() > 25 {
+        return Err(invalid("컨텍스트 포함 파일 수가 검증 한도를 초과했습니다."));
     }
 
     let database = persistence.database()?;
@@ -54,7 +65,8 @@ pub fn validate_review_findings(
         &snapshot,
         &request.snapshot_id,
         &request.selection,
-        &request.included_files,
+        &included_files,
+        &included_source_spans,
     ))
 }
 

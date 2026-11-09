@@ -156,14 +156,23 @@ export interface PreviewReviewContextRequest {
 }
 
 export interface ReviewContextPreview {
+  previewId: string;
   context: string;
   estimatedTokens: number;
   tokenBudget: number;
   includedFiles: string[];
+  includedSourceSpans: RenderedSourceSpan[];
   omittedItems: string[];
   graphSnapshotId: string | null;
   graphCompleteness: string | null;
   tokenEstimateNote: string;
+}
+
+export interface RenderedSourceSpan {
+  relativePath: string;
+  startLine: number;
+  endLine: number;
+  visibleText: string;
 }
 
 export type ReviewFindingCategory =
@@ -237,9 +246,9 @@ export type ReviewFindingSelection =
 
 export interface ValidateReviewFindingsRequest {
   projectPath: string;
+  previewId: string;
   snapshotId: string;
   selection: ReviewFindingSelection;
-  includedFiles: string[];
   structuredOutput: unknown;
 }
 

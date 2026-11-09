@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::ai_provider::ReviewSelection;
 use crate::analyzer::SourceRange;
+use crate::context_builder::RenderedSourceSpan;
 use crate::context_builder::is_sensitive_path;
 use crate::knowledge_graph::GraphSnapshot;
 
@@ -83,6 +84,8 @@ const MAX_SYMBOLS_PER_FINDING: usize = 16;
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_TOTAL_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_INCLUDED_FILES: usize = 25;
+const MAX_INCLUDED_SOURCE_SPANS: usize = 400;
+const MAX_RENDERED_CONTEXT_BYTES: usize = 32_000;
 const MAX_EXCERPT_CHARS: usize = 16_000;
 const MAX_SYMBOL_CHARS: usize = 512;
 const MAX_PATH_CHARS: usize = 1_024;
@@ -143,6 +146,7 @@ pub fn validate_provider_output(
     expected_snapshot_id: &str,
     selection: &ReviewSelection,
     included_files: &[String],
+    included_source_spans: &[RenderedSourceSpan],
 ) -> FindingValidationResult {
     let mut findings = Vec::new();
     let mut diagnostics = Vec::new();
@@ -199,6 +203,44 @@ pub fn validate_provider_output(
             "컨텍스트 포함 파일 수가 검증 한도를 초과했습니다.",
         );
     }
+    if included_source_spans.len() > MAX_INCLUDED_SOURCE_SPANS {
+        return invalid_result(
+            Some(snapshot.summary.snapshot_id.clone()),
+            FindingValidationCode::SourceLimitExceeded,
+            "문맥에 포함된 소스 범위 수가 검증 한도를 초과했습니다.",
+        );
+    }
+    let mut rendered_text_bytes = 0usize;
+    let mut rendered_spans: BTreeMap<String, Vec<(u32, u32, String)>> = BTreeMap::new();
+    for span in included_source_spans {
+        let Some(path) = normalize_relative_path(&span.relative_path) else {
+            return invalid_result(
+                Some(snapshot.summary.snapshot_id.clone()),
+                FindingValidationCode::InvalidPath,
+                "문맥에 포함된 소스 범위의 경로가 올바르지 않습니다.",
+            );
+        };
+        if span.start_line == 0 || span.end_line < span.start_line || !included.contains(&path) {
+            return invalid_result(
+                Some(snapshot.summary.snapshot_id.clone()),
+                FindingValidationCode::InvalidRange,
+                "문맥에 포함된 소스 범위가 올바르지 않습니다.",
+            );
+        }
+        rendered_text_bytes = rendered_text_bytes.saturating_add(span.visible_text.len());
+        if rendered_text_bytes > MAX_RENDERED_CONTEXT_BYTES {
+            return invalid_result(
+                Some(snapshot.summary.snapshot_id.clone()),
+                FindingValidationCode::SourceLimitExceeded,
+                "렌더링된 소스 문맥이 검증 한도를 초과했습니다.",
+            );
+        }
+        rendered_spans.entry(path).or_default().push((
+            span.start_line,
+            span.end_line,
+            span.visible_text.clone(),
+        ));
+    }
     let selected = match selection_path(selection, snapshot) {
         Ok(path) => path,
         Err(code) => {
@@ -226,7 +268,7 @@ pub fn validate_provider_output(
             );
         }
     };
-    let selected_range = match selection_range(selection, &selected_source, &selected) {
+    let selected_range = match selection_range(selection, &selected_source, &selected, snapshot) {
         Ok(range) => range,
         Err(()) => {
             return invalid_result(
@@ -285,6 +327,7 @@ pub fn validate_provider_output(
             &root,
             snapshot,
             &included,
+            &rendered_spans,
             &selected,
             selected_range,
             &mut source_cache,
@@ -317,6 +360,7 @@ fn validate_finding(
     root: &Path,
     snapshot: &GraphSnapshot,
     included: &BTreeSet<String>,
+    rendered_spans: &BTreeMap<String, Vec<(u32, u32, String)>>,
     selected_path: &str,
     selected_range: Option<(usize, usize)>,
     source_cache: &mut BTreeMap<String, String>,
@@ -386,6 +430,28 @@ fn validate_finding(
         if source.get(start..end) != Some(evidence.excerpt.as_str()) {
             return Some(FindingValidationCode::ExcerptMismatch);
         }
+        let last_evidence_line =
+            if evidence.end_column == 1 && evidence.end_line > evidence.start_line {
+                evidence.end_line - 1
+            } else {
+                evidence.end_line
+            };
+        let was_rendered = rendered_spans.get(&path).is_some_and(|spans| {
+            spans.iter().any(|(first, last, visible_text)| {
+                evidence.start_line >= *first
+                    && last_evidence_line <= *last
+                    && excerpt_is_rendered(
+                        evidence.start_line,
+                        last_evidence_line,
+                        &evidence.excerpt,
+                        *first,
+                        visible_text,
+                    )
+            })
+        });
+        if !was_rendered {
+            return Some(FindingValidationCode::OutsideSelectedContext);
+        }
         if let Some((scope_start, scope_end)) = selected_range {
             if path != selected_path || start < scope_start || end > scope_end {
                 return Some(FindingValidationCode::OutsideSelectedContext);
@@ -414,6 +480,27 @@ fn validate_finding(
     }
 
     None
+}
+
+fn excerpt_is_rendered(
+    start_line: u32,
+    end_line: u32,
+    excerpt: &str,
+    span_start_line: u32,
+    visible_text: &str,
+) -> bool {
+    let visible_lines = visible_text.split('\n').collect::<Vec<_>>();
+    let excerpt_lines = excerpt.split('\n').collect::<Vec<_>>();
+    (start_line..=end_line).all(|line| {
+        let Some(visible_line) = visible_lines.get((line - span_start_line) as usize) else {
+            return false;
+        };
+        let Some(excerpt_line) = excerpt_lines.get((line - start_line) as usize) else {
+            return false;
+        };
+        let excerpt_line = excerpt_line.strip_suffix('\r').unwrap_or(excerpt_line);
+        visible_line.contains(excerpt_line)
+    })
 }
 
 fn selection_path(
@@ -448,15 +535,30 @@ fn selection_range(
     selection: &ReviewSelection,
     selected_source: &str,
     selected_path: &str,
+    snapshot: &GraphSnapshot,
 ) -> Result<Option<(usize, usize)>, ()> {
-    let range = match selection {
-        ReviewSelection::File { range, .. } | ReviewSelection::GraphNode { range, .. } => {
-            range.as_ref()
+    match selection {
+        ReviewSelection::File { range, .. } => range
+            .as_ref()
+            .map(|range| source_range_offsets(range, selected_source, selected_path))
+            .transpose(),
+        ReviewSelection::GraphNode { node_id, range, .. } => {
+            let node = snapshot
+                .nodes
+                .iter()
+                .find(|node| node.node_id == *node_id)
+                .ok_or(())?;
+            let expected = node.source_evidence.as_ref().ok_or(())?;
+            let expected_offsets = source_range_offsets(expected, selected_source, selected_path)?;
+            if let Some(range) = range {
+                let provided_offsets = source_range_offsets(range, selected_source, selected_path)?;
+                if provided_offsets != expected_offsets {
+                    return Err(());
+                }
+            }
+            Ok(Some(expected_offsets))
         }
-    };
-    range
-        .map(|range| source_range_offsets(range, selected_source, selected_path))
-        .transpose()
+    }
 }
 
 fn source_range_offsets(
@@ -659,6 +761,7 @@ mod tests {
         FindingValidationState, ReviewFindings, content_hash, validate_provider_output,
     };
     use crate::ai_provider::ReviewSelection;
+    use crate::context_builder::RenderedSourceSpan;
     use crate::knowledge_graph::GraphSnapshot;
     use serde_json::json;
 
@@ -762,6 +865,29 @@ mod tests {
             selection: ReviewSelection,
         ) -> super::FindingValidationResult {
             let included: Vec<String> = included.iter().map(|path| (*path).to_owned()).collect();
+            let spans = included
+                .iter()
+                .map(|relative_path| RenderedSourceSpan {
+                    relative_path: relative_path.clone(),
+                    start_line: 1,
+                    end_line: 100,
+                    visible_text: match relative_path.as_str() {
+                        "src/Cart.kt" => "class Cart {\n  val total = 1\n}".to_owned(),
+                        "src/Other.kt" => "class Other {\n  val value = 2\n}".to_owned(),
+                        _ => String::new(),
+                    },
+                })
+                .collect::<Vec<_>>();
+            self.validate_with_spans(output, included, spans, selection)
+        }
+
+        fn validate_with_spans(
+            &self,
+            output: serde_json::Value,
+            included: Vec<String>,
+            spans: Vec<RenderedSourceSpan>,
+            selection: ReviewSelection,
+        ) -> super::FindingValidationResult {
             validate_provider_output(
                 &output,
                 &self.root,
@@ -769,6 +895,7 @@ mod tests {
                 "snapshot-1",
                 &selection,
                 &included,
+                &spans,
             )
         }
     }
@@ -866,6 +993,90 @@ mod tests {
         assert_eq!(outside_context.state, FindingValidationState::Invalid);
         assert_eq!(
             outside_context.diagnostics[0].code,
+            FindingValidationCode::OutsideSelectedContext
+        );
+    }
+
+    #[test]
+    fn rejects_evidence_outside_the_rendered_source_spans() {
+        let fixture = ProjectFixture::new();
+        let selection = ReviewSelection::File {
+            relative_path: "src/Cart.kt".to_owned(),
+            range: None,
+        };
+        let result = fixture.validate_with_spans(
+            json!({"findings": [finding("src/Cart.kt", "Cart.total", "total")]}),
+            vec!["src/Cart.kt".to_owned()],
+            vec![RenderedSourceSpan {
+                relative_path: "src/Cart.kt".to_owned(),
+                start_line: 1,
+                end_line: 1,
+                visible_text: "class Cart {".to_owned(),
+            }],
+            selection,
+        );
+
+        assert_eq!(result.state, FindingValidationState::Invalid);
+        assert_eq!(
+            result.diagnostics[0].code,
+            FindingValidationCode::OutsideSelectedContext
+        );
+    }
+
+    #[test]
+    fn rejects_evidence_text_missing_from_its_rendered_line() {
+        let fixture = ProjectFixture::new();
+        let selection = ReviewSelection::File {
+            relative_path: "src/Cart.kt".to_owned(),
+            range: None,
+        };
+        let result = fixture.validate_with_spans(
+            json!({"findings": [finding("src/Cart.kt", "Cart.total", "total")]}),
+            vec!["src/Cart.kt".to_owned()],
+            vec![RenderedSourceSpan {
+                relative_path: "src/Cart.kt".to_owned(),
+                start_line: 1,
+                end_line: 2,
+                visible_text: "  val total = 1\nclass Cart {".to_owned(),
+            }],
+            selection,
+        );
+
+        assert_eq!(result.state, FindingValidationState::Invalid);
+        assert_eq!(
+            result.diagnostics[0].code,
+            FindingValidationCode::OutsideSelectedContext
+        );
+    }
+
+    #[test]
+    fn graph_node_without_a_range_uses_snapshot_source_evidence() {
+        let fixture = ProjectFixture::new();
+        let selection = ReviewSelection::GraphNode {
+            node_id: "symbol:Cart.total".to_owned(),
+            label: "Cart.total".to_owned(),
+            range: None,
+        };
+        let valid = fixture.validate_with_selection(
+            json!({"findings": [finding("src/Cart.kt", "Cart.total", "total")]}),
+            &["src/Cart.kt"],
+            selection.clone(),
+        );
+        assert_eq!(valid.state, FindingValidationState::Complete);
+
+        let mut outside_node_finding = finding("src/Cart.kt", "Cart.total", "Cart");
+        outside_node_finding["evidence"][0]["startLine"] = json!(1);
+        outside_node_finding["evidence"][0]["startColumn"] = json!(7);
+        outside_node_finding["evidence"][0]["endLine"] = json!(1);
+        outside_node_finding["evidence"][0]["endColumn"] = json!(11);
+        let outside_node_range = fixture.validate_with_selection(
+            json!({"findings": [outside_node_finding]}),
+            &["src/Cart.kt"],
+            selection,
+        );
+        assert_eq!(outside_node_range.state, FindingValidationState::Invalid);
+        assert_eq!(
+            outside_node_range.diagnostics[0].code,
             FindingValidationCode::OutsideSelectedContext
         );
     }
