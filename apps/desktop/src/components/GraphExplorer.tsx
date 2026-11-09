@@ -32,6 +32,13 @@ function sourceLabel(node: GraphNode): string {
   return node.filePath ?? node.sourceEvidence?.relativePath ?? "소스 위치 없음";
 }
 
+function sourceRangeLabel(node: GraphNode): string {
+  const evidence = node.sourceEvidence;
+  return evidence
+    ? `${sourceLabel(node)}:${evidence.startLine}:${evidence.startColumn}–${evidence.endLine}:${evidence.endColumn}`
+    : sourceLabel(node);
+}
+
 function nodePosition(index: number, count: number) {
   const columns = Math.max(1, Math.ceil(Math.sqrt(count * 1.65)));
   const rows = Math.ceil(count / columns);
@@ -219,7 +226,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                       <dt>정규 이름</dt><dd>{node().qualifiedName ?? "정보 없음"}</dd>
                     </dl>
                     <Show when={node().filePath || node().sourceEvidence}>
-                      <p class="graph-source-path">{sourceLabel(node())}{node().sourceEvidence ? `:${node().sourceEvidence?.startLine}` : ""}</p>
+                      <p class="graph-source-path">{sourceRangeLabel(node())}</p>
                       <button class="secondary-button" type="button" onClick={() => props.onOpenSource(
                         node().filePath ?? node().sourceEvidence!.relativePath,
                         node().sourceEvidence?.startLine ?? null,
