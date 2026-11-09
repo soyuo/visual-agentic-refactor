@@ -577,7 +577,7 @@ pub fn is_sensitive_path(path: &str) -> bool {
     })
 }
 
-fn redact_secrets(text: &str) -> String {
+pub(crate) fn redact_secrets(text: &str) -> String {
     let mut in_private_key = false;
     text.lines()
         .map(|line| {
