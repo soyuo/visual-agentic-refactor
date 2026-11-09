@@ -577,7 +577,7 @@ pub fn is_sensitive_path(path: &str) -> bool {
     })
 }
 
-fn redact_secrets(text: &str) -> String {
+pub(crate) fn redact_secrets(text: &str) -> String {
     let mut in_private_key = false;
     text.lines()
         .map(|line| {
@@ -641,7 +641,99 @@ fn redact_secret_line(line: &str) -> String {
     if let Some(index) = lower.find("bearer ") {
         return format!("{}Bearer [REDACTED]", &line[..index]);
     }
-    line.to_owned()
+    redact_standalone_secret_tokens(line)
+}
+
+fn redact_standalone_secret_tokens(line: &str) -> String {
+    let mut redacted = String::with_capacity(line.len());
+    let mut index = 0;
+    let mut copied_through = 0;
+
+    while index < line.len() {
+        let character = line[index..]
+            .chars()
+            .next()
+            .expect("index is a char boundary");
+        if !is_secret_token_character(character) {
+            index += character.len_utf8();
+            continue;
+        }
+
+        let start = index;
+        while index < line.len() {
+            let character = line[index..]
+                .chars()
+                .next()
+                .expect("index is a char boundary");
+            if !is_secret_token_character(character) {
+                break;
+            }
+            index += character.len_utf8();
+        }
+
+        if is_recognizable_credential(&line[start..index]) {
+            redacted.push_str(&line[copied_through..start]);
+            redacted.push_str("[REDACTED]");
+            copied_through = index;
+        }
+    }
+
+    redacted.push_str(&line[copied_through..]);
+    redacted
+}
+
+fn is_secret_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+}
+
+fn is_recognizable_credential(token: &str) -> bool {
+    let token = token.trim_end_matches('.');
+    let lower = token.to_ascii_lowercase();
+    [
+        ("sk-", 24),
+        ("sk_live_", 24),
+        ("rk_live_", 24),
+        ("ghp_", 24),
+        ("gho_", 24),
+        ("ghu_", 24),
+        ("ghs_", 24),
+        ("ghr_", 24),
+        ("github_pat_", 24),
+        ("glpat-", 24),
+        ("npm_", 24),
+        ("xoxb-", 24),
+        ("xoxp-", 24),
+        ("xoxa-", 24),
+        ("xoxr-", 24),
+        ("xoxs-", 24),
+        ("aiza", 30),
+        ("akia", 20),
+    ]
+    .iter()
+    .any(|(prefix, min_len)| lower.starts_with(prefix) && token.len() >= *min_len)
+        || is_jwt(token)
+}
+
+fn is_jwt(token: &str) -> bool {
+    let mut segments = token.split('.');
+    let (Some(header), Some(payload), Some(signature), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+
+    header.starts_with("eyJ")
+        && header.len() >= 8
+        && payload.len() >= 8
+        && signature.len() >= 16
+        && [header, payload, signature].iter().all(|segment| {
+            segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        })
 }
 
 fn truncate_utf8(text: &str, max_bytes: usize) -> String {
@@ -1039,5 +1131,24 @@ mod tests {
             visible_text_for_lines(private_key, 3, 3, true),
             "3: [REDACTED PRIVATE KEY]"
         );
+    }
+
+    #[test]
+    fn standalone_provider_tokens_and_jwts_are_redacted() {
+        let anthropic_token = "sk-ant-api03-testcredential1234567890";
+        let github_token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+        let gitlab_token = "glpat-AbCdEf1234567890abcdefgh";
+        let npm_token = "npm_abcdef0123456789abcdef0123456789";
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturevalue1234567890";
+        let redacted = redact_secrets(&format!(
+            "provider returned {anthropic_token}, /tmp/{github_token}, {gitlab_token}, {npm_token}, and {jwt}."
+        ));
+
+        assert!(!redacted.contains(anthropic_token));
+        assert!(!redacted.contains(github_token));
+        assert!(!redacted.contains(gitlab_token));
+        assert!(!redacted.contains(npm_token));
+        assert!(!redacted.contains(jwt));
+        assert_eq!(redacted.matches("[REDACTED]").count(), 5);
     }
 }

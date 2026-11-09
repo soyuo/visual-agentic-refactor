@@ -5,6 +5,7 @@ pub mod findings;
 pub mod git;
 pub mod graph;
 pub mod project;
+pub mod review_persistence;
 pub mod scanner;
 pub mod spring;
 pub mod tasks;

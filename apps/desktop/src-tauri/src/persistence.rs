@@ -1,16 +1,25 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::context_builder::redact_secrets;
+use crate::review_finding::{
+    FindingValidationDiagnostic, FindingValidationResult, FindingValidationState, ReviewFinding,
+};
 
 use crate::command_error::{CommandError, CommandErrorCode};
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.sql");
+const REVIEW_MIGRATION: &str = include_str!("../migrations/0003_review_persistence.sql");
+
+static NEXT_REVIEW_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct ProjectDatabase {
@@ -27,6 +36,49 @@ pub struct PersistenceState {
 pub struct StoredProject {
     pub path: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FindingDecisionStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredFindingDecision {
+    pub status: FindingDecisionStatus,
+    pub decided_at_unix_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredReviewSessionSummary {
+    pub session_id: String,
+    pub snapshot_id: String,
+    pub validation_state: FindingValidationState,
+    pub created_at_unix_ms: i64,
+    pub finding_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredReviewFinding {
+    pub finding_id: String,
+    pub finding: ReviewFinding,
+    pub decision: StoredFindingDecision,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredReviewSession {
+    #[serde(flatten)]
+    pub summary: StoredReviewSessionSummary,
+    pub project_path: String,
+    pub diagnostics: Vec<FindingValidationDiagnostic>,
+    pub findings: Vec<StoredReviewFinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +180,382 @@ impl ProjectDatabase {
             .map_err(|error| format!("저장된 프로젝트를 불러오지 못했습니다: {error}"))
     }
 
+    pub fn save_review_session(
+        &self,
+        root_path: &str,
+        result: &FindingValidationResult,
+    ) -> Result<StoredReviewSession, String> {
+        let snapshot_id = result
+            .snapshot_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "분석 스냅샷이 없는 검토 결과는 저장할 수 없습니다.".to_owned())?;
+        if result.findings.len() > 100 {
+            return Err("검토 finding 수가 저장 한도를 초과했습니다.".to_owned());
+        }
+
+        let mut safe_result = result.clone();
+        for finding in &mut safe_result.findings {
+            finding.title = redact_secrets(&finding.title);
+            finding.description = redact_secrets(&finding.description);
+            finding.suggestion = redact_secrets(&finding.suggestion);
+            finding.test_suggestion = redact_secrets(&finding.test_suggestion);
+            for symbol in &mut finding.affected_symbols {
+                *symbol = redact_secrets(symbol);
+            }
+            for evidence in &mut finding.evidence {
+                evidence.excerpt = redact_secrets(&evidence.excerpt);
+            }
+        }
+        for diagnostic in &mut safe_result.diagnostics {
+            diagnostic.message = redact_secrets(&diagnostic.message);
+        }
+        let serialized_size = serde_json::to_vec(&safe_result)
+            .map_err(|_| "검토 결과를 저장 형식으로 변환하지 못했습니다.".to_owned())?
+            .len();
+        if serialized_size > 1024 * 1024 {
+            return Err("검토 결과가 저장 크기 한도를 초과했습니다.".to_owned());
+        }
+
+        let created_at_unix_ms = current_time_unix_ms()?;
+        let sequence = NEXT_REVIEW_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+        let session_id = format!("{created_at_unix_ms}-{}-{sequence}", std::process::id());
+        let diagnostics_json = serde_json::to_string(&safe_result.diagnostics)
+            .map_err(|_| "검토 진단을 저장 형식으로 변환하지 못했습니다.".to_owned())?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("검토 결과 저장을 시작하지 못했습니다: {error}"))?;
+        let project_id: i64 = transaction
+            .query_row(
+                "SELECT id FROM projects WHERE root_path = ?1",
+                [root_path],
+                |row| row.get(0),
+            )
+            .map_err(|_| "프로젝트를 로컬 데이터베이스에서 찾을 수 없습니다.".to_owned())?;
+        transaction
+            .execute(
+                "INSERT INTO review_sessions
+                    (project_id, session_id, snapshot_id, validation_state, diagnostics_json, created_at_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    project_id,
+                    session_id,
+                    snapshot_id,
+                    validation_state_db(safe_result.state),
+                    diagnostics_json,
+                    created_at_unix_ms,
+                ],
+            )
+            .map_err(|error| format!("검토 세션을 저장하지 못했습니다: {error}"))?;
+
+        for (finding_order, finding) in safe_result.findings.iter().enumerate() {
+            let finding_id = format!("f{finding_order:03}");
+            let affected_symbols_json = serde_json::to_string(&finding.affected_symbols)
+                .map_err(|_| "finding 심볼을 저장 형식으로 변환하지 못했습니다.".to_owned())?;
+            transaction
+                .execute(
+                    "INSERT INTO review_findings
+                        (project_id, session_id, finding_id, finding_order, title, description,
+                         category, severity, confidence, affected_symbols_json, suggestion, test_suggestion)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![
+                        project_id,
+                        session_id,
+                        finding_id,
+                        finding_order as i64,
+                        finding.title,
+                        finding.description,
+                        category_db(finding.category),
+                        severity_db(finding.severity),
+                        confidence_db(finding.confidence),
+                        affected_symbols_json,
+                        finding.suggestion,
+                        finding.test_suggestion,
+                    ],
+                )
+                .map_err(|error| format!("검토 finding을 저장하지 못했습니다: {error}"))?;
+
+            for (evidence_order, evidence) in finding.evidence.iter().enumerate() {
+                transaction
+                    .execute(
+                        "INSERT INTO review_finding_evidence
+                            (project_id, session_id, finding_id, evidence_order, relative_path,
+                             start_line, start_column, end_line, end_column, excerpt)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        params![
+                            project_id,
+                            session_id,
+                            finding_id,
+                            evidence_order as i64,
+                            evidence.relative_path,
+                            evidence.start_line,
+                            evidence.start_column,
+                            evidence.end_line,
+                            evidence.end_column,
+                            evidence.excerpt,
+                        ],
+                    )
+                    .map_err(|error| format!("finding 근거를 저장하지 못했습니다: {error}"))?;
+            }
+            transaction
+                .execute(
+                    "INSERT INTO finding_decisions
+                        (project_id, session_id, finding_id, status, decided_at_unix_ms)
+                     VALUES (?1, ?2, ?3, 'pending', NULL)",
+                    params![project_id, session_id, finding_id],
+                )
+                .map_err(|error| format!("finding 결정을 초기화하지 못했습니다: {error}"))?;
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| format!("검토 결과 저장을 완료하지 못했습니다: {error}"))?;
+        drop(connection);
+        self.load_review_session(root_path, &session_id)?
+            .ok_or_else(|| "저장한 검토 세션을 다시 불러오지 못했습니다.".to_owned())
+    }
+
+    pub fn list_review_sessions(
+        &self,
+        root_path: &str,
+    ) -> Result<Vec<StoredReviewSessionSummary>, String> {
+        let session_ids = {
+            let connection = self
+                .connection
+                .lock()
+                .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT s.session_id FROM review_sessions s
+                     JOIN projects p ON p.id = s.project_id
+                     WHERE p.root_path = ?1
+                     ORDER BY s.created_at_unix_ms DESC, s.session_id DESC",
+                )
+                .map_err(|error| format!("검토 세션 조회를 준비하지 못했습니다: {error}"))?;
+            statement
+                .query_map([root_path], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("검토 세션을 조회하지 못했습니다: {error}"))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| format!("검토 세션 결과를 읽지 못했습니다: {error}"))?
+        };
+        session_ids
+            .iter()
+            .map(|session_id| {
+                self.load_review_session(root_path, session_id)?
+                    .map(|session| session.summary)
+                    .ok_or_else(|| "검토 세션이 조회 중 사라졌습니다.".to_owned())
+            })
+            .collect()
+    }
+
+    pub fn load_review_session(
+        &self,
+        root_path: &str,
+        session_id: &str,
+    ) -> Result<Option<StoredReviewSession>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let stored = connection
+            .query_row(
+                "SELECT p.id, p.root_path, s.snapshot_id, s.validation_state,
+                        s.created_at_unix_ms, s.diagnostics_json
+                 FROM review_sessions s JOIN projects p ON p.id = s.project_id
+                 WHERE p.root_path = ?1 AND s.session_id = ?2",
+                params![root_path, session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("검토 세션을 불러오지 못했습니다: {error}"))?;
+        let Some((
+            project_id,
+            project_path,
+            snapshot_id,
+            state,
+            created_at_unix_ms,
+            diagnostics_json,
+        )) = stored
+        else {
+            return Ok(None);
+        };
+        let diagnostics = serde_json::from_str(&diagnostics_json)
+            .map_err(|_| "저장된 검토 진단을 읽을 수 없습니다.".to_owned())?;
+        let mut evidence_by_finding: std::collections::BTreeMap<
+            String,
+            Vec<crate::review_finding::FindingEvidence>,
+        > = std::collections::BTreeMap::new();
+        {
+            let mut statement = connection
+                .prepare(
+                    "SELECT finding_id, relative_path, start_line, start_column, end_line, end_column, excerpt
+                     FROM review_finding_evidence WHERE project_id = ?1 AND session_id = ?2
+                     ORDER BY finding_id, evidence_order",
+                )
+                .map_err(|error| format!("finding 근거 조회를 준비하지 못했습니다: {error}"))?;
+            let rows = statement
+                .query_map(params![project_id, session_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        crate::review_finding::FindingEvidence {
+                            relative_path: row.get(1)?,
+                            start_line: row.get(2)?,
+                            start_column: row.get(3)?,
+                            end_line: row.get(4)?,
+                            end_column: row.get(5)?,
+                            excerpt: row.get(6)?,
+                        },
+                    ))
+                })
+                .map_err(|error| format!("finding 근거를 조회하지 못했습니다: {error}"))?;
+            for row in rows {
+                let (finding_id, evidence) =
+                    row.map_err(|error| format!("finding 근거 결과를 읽지 못했습니다: {error}"))?;
+                evidence_by_finding
+                    .entry(finding_id)
+                    .or_default()
+                    .push(evidence);
+            }
+        }
+        let mut findings = Vec::new();
+        {
+            let mut statement = connection
+                .prepare(
+                    "SELECT f.finding_id, f.title, f.description, f.category, f.severity,
+                            f.confidence, f.affected_symbols_json, f.suggestion, f.test_suggestion,
+                            d.status, d.decided_at_unix_ms
+                     FROM review_findings f JOIN finding_decisions d
+                       ON d.project_id = f.project_id AND d.session_id = f.session_id AND d.finding_id = f.finding_id
+                     WHERE f.project_id = ?1 AND f.session_id = ?2 ORDER BY f.finding_order",
+                )
+                .map_err(|error| format!("검토 finding 조회를 준비하지 못했습니다: {error}"))?;
+            let rows = statement
+                .query_map(params![project_id, session_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, Option<i64>>(10)?,
+                    ))
+                })
+                .map_err(|error| format!("검토 finding을 조회하지 못했습니다: {error}"))?;
+            for row in rows {
+                let (
+                    finding_id,
+                    title,
+                    description,
+                    category,
+                    severity,
+                    confidence,
+                    symbols_json,
+                    suggestion,
+                    test_suggestion,
+                    decision_status,
+                    decided_at_unix_ms,
+                ) = row.map_err(|error| format!("검토 finding 결과를 읽지 못했습니다: {error}"))?;
+                let affected_symbols = serde_json::from_str(&symbols_json)
+                    .map_err(|_| "저장된 finding 심볼을 읽을 수 없습니다.".to_owned())?;
+                let finding = ReviewFinding {
+                    title,
+                    description,
+                    category: category_from_db(&category)?,
+                    severity: severity_from_db(&severity)?,
+                    confidence: confidence_from_db(&confidence)?,
+                    evidence: evidence_by_finding.remove(&finding_id).unwrap_or_default(),
+                    affected_symbols,
+                    suggestion,
+                    test_suggestion,
+                };
+                findings.push(StoredReviewFinding {
+                    finding_id,
+                    finding,
+                    decision: StoredFindingDecision {
+                        status: decision_status_from_db(&decision_status)?,
+                        decided_at_unix_ms,
+                    },
+                });
+            }
+        }
+        Ok(Some(StoredReviewSession {
+            summary: StoredReviewSessionSummary {
+                session_id: session_id.to_owned(),
+                snapshot_id,
+                validation_state: validation_state_from_db(&state)?,
+                created_at_unix_ms,
+                finding_count: findings.len(),
+            },
+            project_path,
+            diagnostics,
+            findings,
+        }))
+    }
+
+    pub fn set_finding_decision(
+        &self,
+        root_path: &str,
+        session_id: &str,
+        finding_id: &str,
+        status: FindingDecisionStatus,
+    ) -> Result<StoredFindingDecision, String> {
+        let decided_at_unix_ms = match status {
+            FindingDecisionStatus::Pending => None,
+            FindingDecisionStatus::Approved | FindingDecisionStatus::Rejected => {
+                Some(current_time_unix_ms()?)
+            }
+        };
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("finding 결정을 갱신하지 못했습니다: {error}"))?;
+        let updated = transaction
+            .execute(
+                "UPDATE finding_decisions SET status = ?1, decided_at_unix_ms = ?2
+                 WHERE project_id = (SELECT id FROM projects WHERE root_path = ?3)
+                   AND session_id = ?4 AND finding_id = ?5",
+                params![
+                    decision_status_db(status),
+                    decided_at_unix_ms,
+                    root_path,
+                    session_id,
+                    finding_id
+                ],
+            )
+            .map_err(|error| format!("finding 결정을 저장하지 못했습니다: {error}"))?;
+        if updated != 1 {
+            return Err("검토 세션 또는 finding을 찾을 수 없습니다.".to_owned());
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("finding 결정 저장을 완료하지 못했습니다: {error}"))?;
+        Ok(StoredFindingDecision {
+            status,
+            decided_at_unix_ms,
+        })
+    }
+
     pub fn replace_file_index<'a, Entries>(
         &self,
         root_path: &str,
@@ -223,6 +651,111 @@ impl ProjectDatabase {
     }
 }
 
+fn validation_state_db(value: FindingValidationState) -> &'static str {
+    match value {
+        FindingValidationState::Complete => "complete",
+        FindingValidationState::Partial => "partial",
+        FindingValidationState::Invalid => "invalid",
+    }
+}
+
+fn validation_state_from_db(value: &str) -> Result<FindingValidationState, String> {
+    match value {
+        "complete" => Ok(FindingValidationState::Complete),
+        "partial" => Ok(FindingValidationState::Partial),
+        "invalid" => Ok(FindingValidationState::Invalid),
+        _ => Err("저장된 검토 상태를 읽을 수 없습니다.".to_owned()),
+    }
+}
+
+fn category_db(value: crate::review_finding::FindingCategory) -> &'static str {
+    use crate::review_finding::FindingCategory as Category;
+    match value {
+        Category::Correctness => "correctness",
+        Category::Security => "security",
+        Category::Performance => "performance",
+        Category::Reliability => "reliability",
+        Category::Maintainability => "maintainability",
+        Category::Testability => "testability",
+        Category::Style => "style",
+        Category::Other => "other",
+    }
+}
+
+fn category_from_db(value: &str) -> Result<crate::review_finding::FindingCategory, String> {
+    use crate::review_finding::FindingCategory as Category;
+    match value {
+        "correctness" => Ok(Category::Correctness),
+        "security" => Ok(Category::Security),
+        "performance" => Ok(Category::Performance),
+        "reliability" => Ok(Category::Reliability),
+        "maintainability" => Ok(Category::Maintainability),
+        "testability" => Ok(Category::Testability),
+        "style" => Ok(Category::Style),
+        "other" => Ok(Category::Other),
+        _ => Err("저장된 finding 분류를 읽을 수 없습니다.".to_owned()),
+    }
+}
+
+fn severity_db(value: crate::review_finding::FindingSeverity) -> &'static str {
+    use crate::review_finding::FindingSeverity as Severity;
+    match value {
+        Severity::Critical => "critical",
+        Severity::High => "high",
+        Severity::Medium => "medium",
+        Severity::Low => "low",
+        Severity::Informational => "informational",
+    }
+}
+
+fn severity_from_db(value: &str) -> Result<crate::review_finding::FindingSeverity, String> {
+    use crate::review_finding::FindingSeverity as Severity;
+    match value {
+        "critical" => Ok(Severity::Critical),
+        "high" => Ok(Severity::High),
+        "medium" => Ok(Severity::Medium),
+        "low" => Ok(Severity::Low),
+        "informational" => Ok(Severity::Informational),
+        _ => Err("저장된 finding 심각도를 읽을 수 없습니다.".to_owned()),
+    }
+}
+
+fn confidence_db(value: crate::review_finding::FindingConfidence) -> &'static str {
+    use crate::review_finding::FindingConfidence as Confidence;
+    match value {
+        Confidence::High => "high",
+        Confidence::Medium => "medium",
+        Confidence::Low => "low",
+    }
+}
+
+fn confidence_from_db(value: &str) -> Result<crate::review_finding::FindingConfidence, String> {
+    use crate::review_finding::FindingConfidence as Confidence;
+    match value {
+        "high" => Ok(Confidence::High),
+        "medium" => Ok(Confidence::Medium),
+        "low" => Ok(Confidence::Low),
+        _ => Err("저장된 finding 신뢰도를 읽을 수 없습니다.".to_owned()),
+    }
+}
+
+fn decision_status_db(value: FindingDecisionStatus) -> &'static str {
+    match value {
+        FindingDecisionStatus::Pending => "pending",
+        FindingDecisionStatus::Approved => "approved",
+        FindingDecisionStatus::Rejected => "rejected",
+    }
+}
+
+fn decision_status_from_db(value: &str) -> Result<FindingDecisionStatus, String> {
+    match value {
+        "pending" => Ok(FindingDecisionStatus::Pending),
+        "approved" => Ok(FindingDecisionStatus::Approved),
+        "rejected" => Ok(FindingDecisionStatus::Rejected),
+        _ => Err("저장된 finding 결정 상태를 읽을 수 없습니다.".to_owned()),
+    }
+}
+
 fn current_time_unix_ms() -> Result<i64, String> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -253,6 +786,7 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
         match next_version {
             1 => transaction.execute_batch(INITIAL_MIGRATION)?,
             2 => transaction.execute_batch(GRAPH_MIGRATION)?,
+            3 => transaction.execute_batch(REVIEW_MIGRATION)?,
             _ => return Err(rusqlite::Error::InvalidQuery),
         }
         transaction.pragma_update(None, "user_version", next_version)?;
@@ -269,7 +803,15 @@ mod tests {
 
     use rusqlite::{Connection, OptionalExtension};
 
-    use super::{INITIAL_MIGRATION, ProjectDatabase, StoredFile, StoredProject};
+    use super::{
+        FindingDecisionStatus, GRAPH_MIGRATION, INITIAL_MIGRATION, ProjectDatabase, StoredFile,
+        StoredProject,
+    };
+    use crate::review_finding::{
+        FindingCategory, FindingConfidence, FindingEvidence, FindingSeverity,
+        FindingValidationCode, FindingValidationDiagnostic, FindingValidationResult,
+        FindingValidationState, ReviewFinding,
+    };
 
     fn stored_file(relative_path: &str) -> StoredFile<'_> {
         StoredFile {
@@ -291,19 +833,145 @@ mod tests {
         std::env::temp_dir().join(format!("visual-agentic-refactor-{nonce}"))
     }
 
+    fn save_test_project_and_snapshot(database: &ProjectDatabase, path: &str) {
+        database
+            .save_project(&StoredProject {
+                path: path.to_owned(),
+                name: "sample".to_owned(),
+            })
+            .expect("project should be saved");
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO graph_snapshots
+                    (project_id, snapshot_id, head_sha, analyzer_version, source_hashes_json,
+                     settings_json, completeness, analyzed_at_unix_ms)
+                 SELECT id, 'snapshot-1', NULL, 'test', '{}', '{}', 'complete', 1
+                 FROM projects WHERE root_path = ?1",
+                [path],
+            )
+            .expect("graph snapshot should be saved");
+    }
+
+    fn sample_review_result(snapshot_id: &str) -> FindingValidationResult {
+        FindingValidationResult {
+            state: FindingValidationState::Partial,
+            snapshot_id: Some(snapshot_id.to_owned()),
+            findings: vec![ReviewFinding {
+                title: "검증 finding".to_owned(),
+                description: "OPENAI_API_KEY=sk-test-secret-12345 standalone sk-ant-api03-testcredential1234567890".to_owned(),
+                category: FindingCategory::Correctness,
+                severity: FindingSeverity::High,
+                confidence: FindingConfidence::Medium,
+                evidence: vec![FindingEvidence {
+                    relative_path: "src/Main.kt".to_owned(),
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 5,
+                    excerpt: "call()".to_owned(),
+                }],
+                affected_symbols: vec!["Sample.call".to_owned()],
+                suggestion: "입력을 검증합니다.".to_owned(),
+                test_suggestion: "빈 입력 테스트를 추가합니다.".to_owned(),
+            }],
+            diagnostics: vec![FindingValidationDiagnostic {
+                finding_index: None,
+                code: FindingValidationCode::SourceChanged,
+                message: "소스가 변경되었습니다.".to_owned(),
+            }],
+        }
+    }
+
     #[test]
     fn creates_and_reuses_initial_schema() {
         let data_dir = temporary_database_dir();
 
         let first = ProjectDatabase::open(data_dir.clone()).expect("database should initialize");
-        assert_eq!(first.schema_version(), 2);
+        assert_eq!(first.schema_version(), 3);
         drop(first);
 
         let second = ProjectDatabase::open(data_dir.clone()).expect("database should reopen");
-        assert_eq!(second.schema_version(), 2);
+        assert_eq!(second.schema_version(), 3);
         drop(second);
 
         std::fs::remove_dir_all(data_dir).expect("temporary database directory should be removed");
+    }
+
+    #[test]
+    fn migrates_v2_graph_snapshot_without_losing_it() {
+        let data_dir = temporary_database_dir();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let database_path = data_dir.join("projects.sqlite3");
+        let connection = Connection::open(&database_path).unwrap();
+        connection.execute_batch(INITIAL_MIGRATION).unwrap();
+        connection.execute_batch(GRAPH_MIGRATION).unwrap();
+        connection
+            .execute(
+                "INSERT INTO projects (root_path, name, created_at_unix_ms, last_opened_at_unix_ms)
+             VALUES ('C:/workspace/sample', 'sample', 10, 20)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO graph_snapshots
+                (project_id, snapshot_id, head_sha, analyzer_version, source_hashes_json,
+                 settings_json, completeness, analyzed_at_unix_ms)
+             VALUES (1, 'snapshot-preserved', NULL, 'test', '{}', '{}', 'complete', 30)",
+                [],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        drop(connection);
+
+        let database = ProjectDatabase::open(data_dir.clone()).unwrap();
+        assert_eq!(database.schema_version(), 3);
+        let connection = database.connection.lock().unwrap();
+        let snapshot_id: String = connection
+            .query_row("SELECT snapshot_id FROM graph_snapshots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(snapshot_id, "snapshot-preserved");
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn failed_review_migration_rolls_back_v3_tables() {
+        let data_dir = temporary_database_dir();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let database_path = data_dir.join("projects.sqlite3");
+        let connection = Connection::open(&database_path).unwrap();
+        connection.execute_batch(INITIAL_MIGRATION).unwrap();
+        connection.execute_batch(GRAPH_MIGRATION).unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        connection
+            .execute_batch("CREATE TABLE review_findings (conflicting INTEGER);")
+            .unwrap();
+        drop(connection);
+
+        assert!(ProjectDatabase::open(data_dir.clone()).is_err());
+        let connection = Connection::open(&database_path).unwrap();
+        let schema_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let sessions_exist: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'review_sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(schema_version, 2);
+        assert_eq!(sessions_exist, None);
+        drop(connection);
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
@@ -331,8 +999,8 @@ mod tests {
         drop(connection);
 
         let database =
-            ProjectDatabase::open(data_dir.clone()).expect("v2 migration should succeed");
-        assert_eq!(database.schema_version(), 2);
+            ProjectDatabase::open(data_dir.clone()).expect("schema migrations should succeed");
+        assert_eq!(database.schema_version(), 3);
         let connection = database.connection.lock().unwrap();
         let project_name: String = connection
             .query_row("SELECT name FROM projects WHERE id = 1", [], |row| {
@@ -391,6 +1059,154 @@ mod tests {
         assert_eq!(schema_version, 1);
         assert_eq!(graph_snapshots_exists, None);
         drop(connection);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn stores_review_findings_and_decisions_across_reopen() {
+        let data_dir = temporary_database_dir();
+        let project_path = "C:/workspace/sample";
+        let database = ProjectDatabase::open(data_dir.clone()).unwrap();
+        save_test_project_and_snapshot(&database, project_path);
+        let session = database
+            .save_review_session(project_path, &sample_review_result("snapshot-1"))
+            .expect("review session should save");
+
+        assert_eq!(
+            session.summary.validation_state,
+            FindingValidationState::Partial
+        );
+        assert_eq!(session.summary.finding_count, 1);
+        assert_eq!(session.findings[0].finding_id, "f000");
+        assert_eq!(
+            session.findings[0].finding.evidence[0].relative_path,
+            "src/Main.kt"
+        );
+        assert_eq!(
+            session.findings[0].decision.status,
+            FindingDecisionStatus::Pending
+        );
+        assert_eq!(session.findings[0].decision.decided_at_unix_ms, None);
+        assert!(
+            !session.findings[0]
+                .finding
+                .description
+                .contains("sk-test-secret-12345")
+        );
+        assert!(
+            !session.findings[0]
+                .finding
+                .description
+                .contains("sk-ant-api03-testcredential1234567890")
+        );
+        assert_eq!(
+            database.list_review_sessions(project_path).unwrap().len(),
+            1
+        );
+
+        let session_id = session.summary.session_id;
+        drop(database);
+        let database = ProjectDatabase::open(data_dir.clone()).unwrap();
+        let reloaded = database
+            .load_review_session(project_path, &session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.findings[0].finding.title, "검증 finding");
+        assert_eq!(
+            reloaded.diagnostics[0].code,
+            FindingValidationCode::SourceChanged
+        );
+        let decision = database
+            .set_finding_decision(
+                project_path,
+                &session_id,
+                "f000",
+                FindingDecisionStatus::Approved,
+            )
+            .unwrap();
+        assert_eq!(decision.status, FindingDecisionStatus::Approved);
+        assert!(decision.decided_at_unix_ms.is_some());
+        let saved_decision = database
+            .load_review_session(project_path, &session_id)
+            .unwrap()
+            .unwrap()
+            .findings
+            .remove(0)
+            .decision;
+        assert_eq!(saved_decision, decision);
+        drop(database);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn rolls_back_review_session_when_a_child_write_fails() {
+        let data_dir = temporary_database_dir();
+        let project_path = "C:/workspace/sample";
+        let database = ProjectDatabase::open(data_dir.clone()).unwrap();
+        save_test_project_and_snapshot(&database, project_path);
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_review_decision BEFORE INSERT ON finding_decisions
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )
+            .unwrap();
+
+        let error = database
+            .save_review_session(project_path, &sample_review_result("snapshot-1"))
+            .expect_err("injected child insert should fail");
+        assert!(error.contains("결정을 초기화하지 못했습니다"));
+        let connection = database.connection.lock().unwrap();
+        let session_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM review_sessions", [], |row| row.get(0))
+            .unwrap();
+        let finding_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM review_findings", [], |row| row.get(0))
+            .unwrap();
+        let evidence_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM review_finding_evidence", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let foreign_key_errors: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!((session_count, finding_count, evidence_count), (0, 0, 0));
+        assert_eq!(foreign_key_errors, 0);
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_review_session_when_its_snapshot_is_missing() {
+        let data_dir = temporary_database_dir();
+        let project_path = "C:/workspace/sample";
+        let database = ProjectDatabase::open(data_dir.clone()).unwrap();
+        database
+            .save_project(&StoredProject {
+                path: project_path.to_owned(),
+                name: "sample".to_owned(),
+            })
+            .unwrap();
+
+        assert!(
+            database
+                .save_review_session(project_path, &sample_review_result("missing-snapshot"))
+                .is_err()
+        );
+        let session_count: i64 = database
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM review_sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(session_count, 0);
+        drop(database);
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 

@@ -90,7 +90,7 @@ const MAX_EXCERPT_CHARS: usize = 16_000;
 const MAX_SYMBOL_CHARS: usize = 512;
 const MAX_PATH_CHARS: usize = 1_024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FindingValidationState {
     Complete,
@@ -98,7 +98,7 @@ pub enum FindingValidationState {
     Invalid,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FindingValidationCode {
     InvalidStructuredOutput,
@@ -119,7 +119,7 @@ pub enum FindingValidationCode {
     ProjectMismatch,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FindingValidationDiagnostic {
     pub finding_index: Option<usize>,
@@ -127,7 +127,7 @@ pub struct FindingValidationDiagnostic {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FindingValidationResult {
     pub state: FindingValidationState,
