@@ -108,6 +108,7 @@ pub struct AnalyzerSymbol {
 pub struct AnalyzerImport {
     pub name: String,
     pub alias: Option<String>,
+    pub is_static: bool,
     pub is_wildcard: bool,
     pub location: SourceRange,
 }
@@ -228,6 +229,14 @@ impl AnalyzerRegistry {
         registry
             .register(Box::new(crate::kotlin::KotlinAnalyzer))
             .expect("the default Kotlin analyzer should register once");
+        registry
+    }
+
+    pub fn with_java() -> Self {
+        let mut registry = Self::default();
+        registry
+            .register(Box::new(crate::java::JavaAnalyzer))
+            .expect("the default Java analyzer should register once");
         registry
     }
 

@@ -3,6 +3,7 @@ pub mod command_error;
 pub mod commands;
 pub mod events;
 pub mod git_status;
+pub mod java;
 pub mod kotlin;
 pub mod persistence;
 pub mod project_detection;
