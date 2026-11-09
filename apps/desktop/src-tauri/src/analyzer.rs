@@ -103,18 +103,29 @@ pub struct AnalyzerSymbol {
     pub confidence: Confidence,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyzerImport {
+    pub name: String,
+    pub alias: Option<String>,
+    pub is_wildcard: bool,
+    pub location: SourceRange,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RelationshipKind {
     Calls,
     Implements,
     Extends,
+    Inherits,
     Imports,
     Injects,
     Exposes,
     UsesDto,
     Controls,
     Throws,
+    AnnotatedBy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -167,6 +178,7 @@ pub struct AnalysisOutput {
     pub language: SourceLanguage,
     pub completeness: AnalysisCompleteness,
     pub symbols: Vec<AnalyzerSymbol>,
+    pub imports: Vec<AnalyzerImport>,
     pub relationships: Vec<AnalyzerRelationship>,
     pub diagnostics: Vec<AnalyzerDiagnostic>,
 }
@@ -211,6 +223,14 @@ pub struct AnalyzerRegistry {
 }
 
 impl AnalyzerRegistry {
+    pub fn with_kotlin() -> Self {
+        let mut registry = Self::default();
+        registry
+            .register(Box::new(crate::kotlin::KotlinAnalyzer))
+            .expect("the default Kotlin analyzer should register once");
+        registry
+    }
+
     pub fn register(&mut self, adapter: Box<dyn Analyzer>) -> Result<(), AnalyzerError> {
         let language = adapter.descriptor().language;
         if self
@@ -291,6 +311,7 @@ mod tests {
                 language: SourceLanguage::Kotlin,
                 completeness: AnalysisCompleteness::Complete,
                 symbols: Vec::new(),
+                imports: Vec::new(),
                 relationships: Vec::new(),
                 diagnostics: Vec::new(),
             })
@@ -307,6 +328,7 @@ mod tests {
                 language: SourceLanguage::Java,
                 completeness: AnalysisCompleteness::Complete,
                 symbols: Vec::new(),
+                imports: Vec::new(),
                 relationships: Vec::new(),
                 diagnostics: Vec::new(),
             })
