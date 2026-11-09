@@ -861,7 +861,7 @@ mod tests {
             snapshot_id: Some(snapshot_id.to_owned()),
             findings: vec![ReviewFinding {
                 title: "검증 finding".to_owned(),
-                description: "OPENAI_API_KEY=sk-test-secret-12345".to_owned(),
+                description: "OPENAI_API_KEY=sk-test-secret-12345 standalone sk-ant-api03-testcredential1234567890".to_owned(),
                 category: FindingCategory::Correctness,
                 severity: FindingSeverity::High,
                 confidence: FindingConfidence::Medium,
@@ -1092,6 +1092,12 @@ mod tests {
                 .finding
                 .description
                 .contains("sk-test-secret-12345")
+        );
+        assert!(
+            !session.findings[0]
+                .finding
+                .description
+                .contains("sk-ant-api03-testcredential1234567890")
         );
         assert_eq!(
             database.list_review_sessions(project_path).unwrap().len(),
