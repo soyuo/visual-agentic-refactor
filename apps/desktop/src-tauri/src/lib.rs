@@ -33,6 +33,7 @@ pub fn run() {
             commands::graph::save_graph_snapshot,
             commands::graph::list_graph_snapshots,
             commands::graph::get_graph_snapshot,
+            commands::spring::analyze_spring_project,
             commands::scanner::scan_project,
             commands::tasks::cancel_task
         ])

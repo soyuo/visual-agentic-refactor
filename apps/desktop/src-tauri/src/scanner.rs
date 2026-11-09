@@ -141,15 +141,31 @@ pub fn scan_project(
     app: AppHandle,
     task_control: TaskControl,
 ) -> Result<ScanProjectResponse, CommandError> {
+    scan_project_and_process(
+        request,
+        app,
+        task_control,
+        |response: &ScanProjectResponse| {
+            format!("프로젝트 스캔 완료: {}개 항목", response.summary.entries)
+        },
+        |response, _, _| Ok(response.clone()),
+    )
+}
+
+pub fn scan_project_and_process<T>(
+    request: ScanProjectRequest,
+    app: AppHandle,
+    task_control: TaskControl,
+    success_message: impl FnOnce(&T) -> String,
+    process: impl FnOnce(&ScanProjectResponse, &TaskControl, &AppHandle) -> Result<T, CommandError>,
+) -> Result<T, CommandError> {
     let mut progress = ScanProgress::new(&app, &task_control);
     progress.emit_initial()?;
-    let result = scan_project_inner(request, &mut progress);
+    let result = scan_project_inner(request, &mut progress)
+        .and_then(|response| process(&response, &task_control, &app));
 
     let (status, message) = match &result {
-        Ok(response) => (
-            TaskStatus::Completed,
-            format!("프로젝트 스캔 완료: {}개 항목", response.summary.entries),
-        ),
+        Ok(response) => (TaskStatus::Completed, success_message(&response)),
         Err(error) if matches!(&error.code, CommandErrorCode::Cancelled) => (
             TaskStatus::Cancelled,
             "사용자가 프로젝트 스캔을 취소했습니다.".into(),

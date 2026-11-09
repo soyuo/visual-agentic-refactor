@@ -1811,6 +1811,67 @@ class ItemController extends BaseController {}
     }
 
     #[test]
+    fn extracts_kotlin_mvc_mapping_and_path_parameters() {
+        let source = r#"
+package sample
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
+@RestController
+@RequestMapping("/api")
+class KotlinController() {
+    @GetMapping("/users/{id}")
+    fun getUser(@PathVariable id: String): UserDto = UserDto()
+}
+data class UserDto(val id: String)
+"#;
+        let snapshot = analyze_spring_sources(
+            "snapshot-kotlin-route",
+            &[SpringSourceFile {
+                relative_path: "src/main/kotlin/sample/KotlinController.kt",
+                source,
+                language: SourceLanguage::Kotlin,
+            }],
+        )
+        .unwrap();
+        let endpoint = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.node_type == GraphNodeType::ApiEndpoint)
+            .expect("Kotlin endpoint");
+        let controller = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.name == "KotlinController")
+            .unwrap();
+        assert_eq!(controller.metadata["springRoles"][0], "restController");
+        let request_mapping = snapshot
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.edge_type == crate::knowledge_graph::GraphEdgeType::AnnotatedBy
+                    && edge.source_node_id == controller.node_id
+                    && edge.target_name.as_deref() == Some("RequestMapping")
+            })
+            .unwrap();
+        assert_eq!(
+            source.get(request_mapping.evidence.start_byte..request_mapping.evidence.end_byte),
+            Some("@RequestMapping(\"/api\")"),
+            "evidence range {:?}",
+            request_mapping.evidence
+        );
+        assert_eq!(endpoint.metadata["httpMethod"], "GET");
+        assert_eq!(endpoint.metadata["path"], "/api/users/{id}");
+        assert_eq!(
+            endpoint.metadata["parameters"][0]["binding"],
+            "PathVariable"
+        );
+        assert_eq!(endpoint.metadata["parameters"][0]["type"], "String");
+        assert_eq!(endpoint.metadata["responseType"], "UserDto");
+    }
+
+    #[test]
     fn marks_dynamic_spring_route_registration_unknown() {
         let source = r#"
 package sample;

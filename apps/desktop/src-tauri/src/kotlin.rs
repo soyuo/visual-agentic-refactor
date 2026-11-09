@@ -395,32 +395,133 @@ fn add_annotations(
     output: &mut AnalysisOutput,
     overflowed_relationships: &mut bool,
 ) {
-    let Some(modifiers) = find_child_by_kind(declaration, "modifiers") else {
-        return;
-    };
-    let mut stack = vec![modifiers];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "annotation" {
-            if let Some(name) = annotation_name(node, input.source) {
-                push_relationship(
-                    output,
-                    overflowed_relationships,
-                    AnalyzerRelationship {
-                        kind: RelationshipKind::AnnotatedBy,
-                        source_symbol_id: symbol.id.clone(),
-                        target_symbol_id: None,
-                        target_name: Some(name),
-                        location: source_range(input.relative_path, input.source, line_index, node),
-                        confidence: Confidence::Confirmed,
-                    },
-                );
+    let mut annotations = Vec::new();
+    if let Some(modifiers) = find_child_by_kind(declaration, "modifiers") {
+        let mut stack = vec![modifiers];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "annotation" {
+                annotations.push(node);
+                continue;
+            }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.named_children(&mut cursor).collect();
+            stack.extend(children.into_iter().rev());
+        }
+    }
+
+    // Kotlin's grammar wraps some annotated declarations in one or more
+    // annotated_expression nodes instead of placing annotations in modifiers.
+    if let Some(parent) = declaration
+        .parent()
+        .filter(|node| node.kind() == "annotated_expression")
+    {
+        let mut stack = vec![parent];
+        while let Some(node) = stack.pop() {
+            if node.id() == declaration.id() {
+                continue;
+            }
+            if node.kind() == "annotation" {
+                annotations.push(node);
+                continue;
+            }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.named_children(&mut cursor).collect();
+            stack.extend(children.into_iter().rev());
+        }
+    }
+
+    // The Kotlin grammar may parse file-level annotations as adjacent annotated
+    // expressions before the declaration instead of as declaration modifiers.
+    let mut previous = declaration.prev_named_sibling();
+    while let Some(node) = previous.filter(|node| node.kind() == "annotated_expression") {
+        let mut stack = vec![node];
+        while let Some(current) = stack.pop() {
+            if current.kind() == "annotation" {
+                annotations.push(current);
+                continue;
+            }
+            let mut cursor = current.walk();
+            let children: Vec<_> = current.named_children(&mut cursor).collect();
+            stack.extend(children.into_iter().rev());
+        }
+        previous = node.prev_named_sibling();
+    }
+
+    for node in annotations {
+        if let Some(name) = annotation_name(node, input.source) {
+            push_relationship(
+                output,
+                overflowed_relationships,
+                AnalyzerRelationship {
+                    kind: RelationshipKind::AnnotatedBy,
+                    source_symbol_id: symbol.id.clone(),
+                    target_symbol_id: None,
+                    target_name: Some(name),
+                    location: annotation_range(input.relative_path, input.source, line_index, node),
+                    confidence: Confidence::Confirmed,
+                },
+            );
+        }
+    }
+}
+
+fn annotation_range(
+    relative_path: &str,
+    source: &str,
+    line_index: &LineIndex,
+    annotation: Node<'_>,
+) -> SourceRange {
+    let mut range = source_range(relative_path, source, line_index, annotation);
+    if let Some(arguments) = find_descendant_by_kind(annotation, "value_arguments") {
+        let end = arguments.end_position();
+        range.end_byte = arguments.end_byte();
+        range.end_line = end.row as u32 + 1;
+        range.end_column = line_index.unicode_column(source, end);
+    } else if let Some(end_byte) = kotlin_annotation_call_end(source, range.end_byte) {
+        let appended = &source[range.end_byte..end_byte];
+        range.end_byte = end_byte;
+        range.end_column += appended.chars().count() as u32;
+    }
+    range
+}
+
+fn kotlin_annotation_call_end(source: &str, byte: usize) -> Option<usize> {
+    let remaining = source.get(byte..)?;
+    let line = remaining
+        .split_once('\n')
+        .map_or(remaining, |(line, _)| line);
+    let whitespace = line.len() - line.trim_start().len();
+    let call = &line[whitespace..];
+    if !call.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, character) in call.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active_quote {
+                quote = None;
             }
             continue;
         }
-        let mut cursor = node.walk();
-        let children: Vec<_> = node.named_children(&mut cursor).collect();
-        stack.extend(children.into_iter().rev());
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(byte + whitespace + offset + character.len_utf8());
+                }
+            }
+            _ => {}
+        }
     }
+    None
 }
 
 fn add_inheritance(
