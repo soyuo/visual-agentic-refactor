@@ -115,6 +115,7 @@ function getGitStatusLabel(status: GitStatusResponse["state"]): string {
 
 function AppShell(props: AppShellProps) {
   const [activeView, setActiveView] = createSignal<"project" | "graph" | "review">("project");
+  const [selectedGraphNodeId, setSelectedGraphNodeId] = createSignal<string | null>(null);
   const detectionRows = () => {
     const detection = props.scanResult?.projectDetection;
     if (!detection) return [];
@@ -200,13 +201,19 @@ function AppShell(props: AppShellProps) {
             error={props.graphError}
             projectAvailable={props.project !== null}
             onAnalyze={props.onAnalyzeGraph}
+            onSelectionChanged={setSelectedGraphNodeId}
             onOpenSource={(relativePath, line) => {
               setActiveView("project");
               props.onOpenGraphSource(relativePath, line);
             }}
           />
         ) : activeView() === "review" ? (
-          <AiReviewWorkspace project={props.project} selectedEntry={props.selectedEntry} />
+          <AiReviewWorkspace
+            project={props.project}
+            selectedEntry={props.selectedEntry}
+            graphSnapshot={props.graphSnapshot}
+            selectedGraphNodeId={selectedGraphNodeId()}
+          />
         ) : <>
         <div class="content-heading">
           <div>

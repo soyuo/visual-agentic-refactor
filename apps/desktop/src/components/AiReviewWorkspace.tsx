@@ -3,10 +3,14 @@ import {
   deleteProviderCredential,
   listProviderCredentials,
   saveProviderCredential,
+  previewReviewContext,
   toAppCommandError,
   type CredentialProvider,
+  type GraphSnapshot,
   type ProviderCredentialStatus,
   type OpenProjectResponse,
+  type ReviewContextPreview,
+  type ReviewContextScope,
   type ScanEntry,
 } from "../lib/commands";
 import { isSensitiveTransferPath } from "../lib/externalTransferSafety";
@@ -20,6 +24,8 @@ const providers: Array<{ id: CredentialProvider; label: string }> = [
 interface AiReviewWorkspaceProps {
   project: OpenProjectResponse | null;
   selectedEntry: ScanEntry | null;
+  graphSnapshot: GraphSnapshot | null;
+  selectedGraphNodeId: string | null;
 }
 
 function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
@@ -33,6 +39,11 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [consentDialogOpen, setConsentDialogOpen] = createSignal(false);
   const [consentDecision, setConsentDecision] = createSignal<"approved" | "rejected" | "cancelled" | null>(null);
   const [consentScopeKey, setConsentScopeKey] = createSignal("");
+  const [scopeKind, setScopeKind] = createSignal<"file" | "graphNode">("file");
+  const [contextPreview, setContextPreview] = createSignal<ReviewContextPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = createSignal(false);
+  const [previewError, setPreviewError] = createSignal<string | null>(null);
+  let previewRequestVersion = 0;
 
   const selectedFile = () => {
     const entry = props.selectedEntry;
@@ -41,13 +52,42 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
       : null;
   };
   const activeCredential = () => statuses().find((status) => status.provider === selectedProvider());
+  const selectedGraphNode = () => props.graphSnapshot?.nodes.find((node) => node.nodeId === props.selectedGraphNodeId) ?? null;
+  const graphNodePath = () => {
+    const node = selectedGraphNode();
+    const path = node?.filePath ?? node?.sourceEvidence?.relativePath ?? null;
+    return path && /\.(java|kt|kts)$/i.test(path) && !isSensitiveTransferPath(path) ? path : null;
+  };
+  const currentScope = (): ReviewContextScope | null => {
+    if (scopeKind() === "graphNode") {
+      const node = selectedGraphNode();
+      return node && graphNodePath() ? { graphNode: { nodeId: node.nodeId } } : null;
+    }
+    const file = selectedFile();
+    return file ? { file: { relativePath: file.relativePath, range: null } } : null;
+  };
+  const scopeLabel = () => scopeKind() === "graphNode"
+    ? selectedGraphNode()?.qualifiedName ?? selectedGraphNode()?.name ?? graphNodePath()
+    : selectedFile()?.relativePath;
+  const scopeKey = () => JSON.stringify([
+    props.project?.path ?? "",
+    selectedProvider(),
+    scopeKind(),
+    selectedFile()?.relativePath ?? "",
+    props.selectedGraphNodeId ?? "",
+    props.graphSnapshot?.snapshotId ?? "",
+  ]);
 
   createEffect(() => {
-    const scopeKey = `${props.project?.path ?? ""}:${selectedProvider()}:${selectedFile()?.relativePath ?? ""}`;
-    if (scopeKey !== consentScopeKey()) {
-      setConsentScopeKey(scopeKey);
+    const currentScopeKey = scopeKey();
+    if (currentScopeKey !== consentScopeKey()) {
+      previewRequestVersion += 1;
+      setPreviewLoading(false);
+      setConsentScopeKey(currentScopeKey);
       setConsentDecision(null);
       setConsentDialogOpen(false);
+      setContextPreview(null);
+      setPreviewError(null);
     }
   });
 
@@ -99,6 +139,33 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
       setError(toAppCommandError(cause).message);
     } finally {
       setBusyProvider(null);
+    }
+  }
+
+  async function loadContextPreview() {
+    const scope = currentScope();
+    if (!props.project || !scope || previewLoading()) return;
+    const requestVersion = ++previewRequestVersion;
+    const requestScopeKey = scopeKey();
+    setPreviewLoading(true);
+    setPreviewError(null);
+    setContextPreview(null);
+    setConsentDecision(null);
+    try {
+      const preview = await previewReviewContext({
+        projectPath: props.project.path,
+        scope,
+        maxContextTokens: 32_000,
+      });
+      if (requestVersion === previewRequestVersion && requestScopeKey === scopeKey()) {
+        setContextPreview(preview);
+      }
+    } catch (cause: unknown) {
+      if (requestVersion === previewRequestVersion && requestScopeKey === scopeKey()) {
+        setPreviewError(toAppCommandError(cause).message);
+      }
+    } finally {
+      if (requestVersion === previewRequestVersion) setPreviewLoading(false);
     }
   }
 
@@ -186,7 +253,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         <span class="transfer-shield" aria-hidden="true">!</span>
         <div>
           <h2 id="transfer-note-title">외부 전송 동의</h2>
-          <p>외부 요청 기능은 아직 연결되지 않았습니다. 현재는 이 화면에서 제공자와 파일 범위를 확인하고 명시적으로 동의하거나 거부할 수 있습니다.</p>
+          <p>외부 요청 기능은 아직 연결되지 않았습니다. 현재는 제공자와 구성된 문맥을 미리 본 뒤 명시적으로 동의하거나 거부할 수 있습니다.</p>
           <strong>현재 앱은 외부 요청을 보내지 않습니다. 동의는 이번 화면에서만 유지되며 저장되지 않습니다.</strong>
         </div>
       </section>
@@ -195,31 +262,51 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         <div class="ai-settings-heading">
           <div>
             <h2 id="transfer-scope-title">검토 전송 범위</h2>
-            <p>프로젝트 탐색 화면에서 파일을 선택한 뒤, 전송 전에 범위를 확인합니다.</p>
+            <p>선택 파일 또는 그래프 항목의 근거를 모아 전송 전에 전체 문맥을 미리봅니다.</p>
           </div>
+          <Show when={selectedFile() || graphNodePath()}>
+            <div class="scope-kind-switch" role="group" aria-label="문맥 범위 선택">
+              <button classList={{ active: scopeKind() === "file" }} type="button" disabled={!selectedFile()} onClick={() => setScopeKind("file")}>파일</button>
+              <button classList={{ active: scopeKind() === "graphNode" }} type="button" disabled={!graphNodePath()} onClick={() => setScopeKind("graphNode")}>그래프 항목</button>
+            </div>
+          </Show>
           <button
             class="primary-button"
             type="button"
-            disabled={!props.project || !selectedFile() || !activeCredential()?.configured}
-            onClick={() => { setConsentDecision(null); setConsentDialogOpen(true); }}
+            disabled={!props.project || !currentScope() || previewLoading()}
+            onClick={() => void loadContextPreview()}
           >
-            전송 범위 확인
+            {previewLoading() ? "문맥 구성 중..." : "문맥 미리보기 구성"}
           </button>
         </div>
         <dl class="transfer-scope-summary">
           <div><dt>제공자</dt><dd>{providers.find((item) => item.id === selectedProvider())?.label}</dd></div>
-          <div><dt>파일</dt><dd>{selectedFile()?.relativePath ?? "선택된 분석 가능 파일 없음"}</dd></div>
-          <div><dt>범위</dt><dd>{selectedFile() ? "전체 파일 · 줄 범위 지정 없음" : "전송 대상 없음"}</dd></div>
-          <div><dt>문맥</dt><dd>{selectedFile() ? "선택 파일 전체 코드, 경로, 기본 검토 지시 · 본문 미리보기 미제공" : "미리보기할 문맥 없음"}</dd></div>
+          <div><dt>선택 범위</dt><dd>{scopeLabel() ?? "선택된 파일 또는 그래프 항목 없음"}</dd></div>
+          <div><dt>포함 파일</dt><dd>{contextPreview()?.includedFiles.join(", ") ?? "미리보기 전"}</dd></div>
+          <div><dt>예상 크기</dt><dd>{contextPreview() ? `약 ${contextPreview()!.estimatedTokens.toLocaleString()} / ${contextPreview()!.tokenBudget.toLocaleString()} tokens · ${contextPreview()!.tokenEstimateNote}` : "미리보기 전"}</dd></div>
+          <div><dt>그래프</dt><dd>{contextPreview()?.graphSnapshotId ? `${contextPreview()!.graphSnapshotId} · ${contextPreview()!.graphCompleteness}` : "저장된 그래프 근거 없음"}</dd></div>
         </dl>
         <Show when={props.selectedEntry?.kind === "file" && isSensitiveTransferPath(props.selectedEntry.relativePath)}>
           <p class="inline-error" role="status">민감 정보 가능성이 있는 파일 이름이 감지되어 전송 대상에서 제외했습니다.</p>
         </Show>
-        <Show when={!props.project || !selectedFile()}>
-          <p class="muted-message">전송하려면 프로젝트 탐색에서 분석 가능한 파일 하나를 선택하세요.</p>
+        <Show when={!props.project || !currentScope()}>
+          <p class="muted-message">미리보려면 분석 가능한 파일을 선택하거나, 코드 그래프에서 소스 위치가 있는 항목을 선택하세요.</p>
         </Show>
-        <Show when={selectedFile() && !activeCredential()?.configured}>
-          <p class="muted-message">선택한 제공자의 자격 증명을 먼저 설정하세요.</p>
+        <Show when={currentScope() && !activeCredential()?.configured}>
+          <p class="muted-message">문맥 미리보기는 로컬에서 구성합니다. 외부 전송 동의를 검토하려면 제공자 자격 증명을 설정하세요.</p>
+        </Show>
+        <Show when={previewError()}><p class="inline-error" role="alert">{previewError()}</p></Show>
+        <Show when={contextPreview()}>
+          {(preview) => <>
+            <div class="context-preview-toolbar">
+              <strong>실제 구성 문맥</strong>
+              <button class="primary-button" type="button" disabled={!activeCredential()?.configured} onClick={() => { setConsentDecision(null); setConsentDialogOpen(true); }}>이 문맥으로 동의 검토</button>
+            </div>
+            <pre class="context-preview-body">{preview().context}</pre>
+            <Show when={preview().omittedItems.length > 0}>
+              <div class="context-omissions"><strong>생략 항목</strong><ul>{preview().omittedItems.map((item) => <li>{item}</li>)}</ul></div>
+            </Show>
+          </>}
         </Show>
         <Show when={consentDecision()}>
           <p class="credential-notice" role="status">
@@ -232,8 +319,8 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         </Show>
       </section>
 
-      <Show when={consentDialogOpen() && selectedFile()}>
-        {(file) => (
+      <Show when={consentDialogOpen() && contextPreview()}>
+        {(preview) => (
           <div class="consent-backdrop">
             <section class="consent-dialog" role="dialog" aria-modal="true" aria-labelledby="consent-title">
               <p class="eyebrow">EXTERNAL TRANSFER REVIEW</p>
@@ -242,11 +329,13 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
               <dl class="transfer-scope-summary consent-summary">
                 <div><dt>제공자</dt><dd>{providers.find((item) => item.id === selectedProvider())?.label}</dd></div>
                 <div><dt>프로젝트</dt><dd>{props.project?.name}</dd></div>
-                <div><dt>파일 경로</dt><dd>{file().relativePath}</dd></div>
-                <div><dt>범위</dt><dd>전체 파일 · 줄 범위 지정 없음</dd></div>
-                <div><dt>예상 문맥</dt><dd>파일 경로, 파일 전체 코드, 기본 검토 지시 · 본문 미리보기 미제공</dd></div>
+                <div><dt>선택 범위</dt><dd>{scopeLabel()}</dd></div>
+                <div><dt>포함 파일</dt><dd>{preview().includedFiles.join(", ")}</dd></div>
+                <div><dt>예상 크기</dt><dd>{preview().estimatedTokens.toLocaleString()} / {preview().tokenBudget.toLocaleString()} tokens</dd></div>
+                <div><dt>생략</dt><dd>{preview().omittedItems.length ? preview().omittedItems.join("; ") : "없음"}</dd></div>
               </dl>
-              <p class="consent-warning">실제 요청 기능이 연결되지 않았고 전송 문맥 본문도 미리 볼 수 없습니다. 따라서 현재 버전은 동의 후에도 데이터를 보내지 않으며, 이 결정은 저장되거나 재사용되지 않습니다. 실제 전송 기능을 연결할 때는 완성된 문맥 미리보기를 다시 확인하고 동의해야 합니다.</p>
+              <pre class="context-preview-body consent-context-preview">{preview().context}</pre>
+              <p class="consent-warning">이 동의는 사용자 검토 기록일 뿐, 실제 요청 기능은 아직 연결되지 않았습니다. 현재 버전은 외부로 데이터를 보내지 않으며 결정도 저장하거나 재사용하지 않습니다.</p>
               <div class="consent-actions">
                 <button class="secondary-button" type="button" onClick={() => { setConsentDecision("cancelled"); setConsentDialogOpen(false); }}>취소</button>
                 <button class="secondary-button" type="button" onClick={() => { setConsentDecision("rejected"); setConsentDialogOpen(false); }}>거부</button>

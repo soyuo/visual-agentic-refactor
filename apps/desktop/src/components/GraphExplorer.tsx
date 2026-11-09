@@ -13,6 +13,7 @@ interface GraphExplorerProps {
   projectAvailable: boolean;
   onAnalyze: () => void;
   onOpenSource: (relativePath: string, line: number | null) => void;
+  onSelectionChanged: (nodeId: string | null) => void;
 }
 
 const views: { id: GraphViewKind; label: string }[] = [
@@ -86,6 +87,8 @@ function GraphExplorer(props: GraphExplorerProps) {
   const positions = createMemo(() => new Map(indexedNodes().map((item) => [item.node.nodeId, item])));
   const selectedEdges = createMemo(() => model()?.edges.filter((edge) =>
     edge.sourceNodeId === selectedId() || edge.targetNodeId === selectedId()) ?? []);
+
+  createEffect(() => props.onSelectionChanged(selectedNode()?.nodeId ?? null));
 
   createEffect(() => {
     const nodes = model()?.nodes ?? [];

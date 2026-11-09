@@ -3,6 +3,7 @@ pub mod analyzer;
 pub mod anthropic_provider;
 pub mod command_error;
 pub mod commands;
+pub mod context_builder;
 pub mod credentials;
 pub mod events;
 pub mod git_status;
@@ -34,6 +35,7 @@ pub fn run() {
             commands::credentials::list_provider_credentials,
             commands::credentials::save_provider_credential,
             commands::credentials::delete_provider_credential,
+            commands::context::preview_review_context,
             commands::git::get_git_status,
             commands::project::open_project,
             commands::project::get_last_project,
