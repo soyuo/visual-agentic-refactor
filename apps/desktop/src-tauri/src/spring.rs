@@ -631,7 +631,7 @@ fn build_api_endpoints(
                     let method_label = http_method.as_deref().unwrap_or("ANY");
                     let identity = format!(
                         "{}:{}:{}:{}:{}",
-                        controller.path, controller.name, handler.path, handler.name, path_label
+                        controller.path, controller.name, handler.path, handler.key, path_label
                     );
                     let endpoint_id = stable_node_id(
                         GraphNodeType::ApiEndpoint,
@@ -1813,6 +1813,40 @@ class UserDto {}
                 && node.name == "UserDto"
                 && node.metadata["direction"] == "response"
         }));
+    }
+
+    #[test]
+    fn creates_distinct_endpoints_for_overloaded_handlers() {
+        let source = r#"
+package sample;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+@RestController
+class LookupController {
+    @GetMapping("/lookup")
+    public String lookup() { return ""; }
+
+    @GetMapping("/lookup")
+    public String lookup(String query) { return query; }
+}
+"#;
+        let snapshot = analyze_spring_sources(
+            "snapshot-overloaded-endpoints",
+            &[SpringSourceFile {
+                relative_path: "src/main/java/sample/LookupController.java",
+                source,
+                language: SourceLanguage::Java,
+            }],
+        )
+        .unwrap();
+        let endpoints: Vec<_> = snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == GraphNodeType::ApiEndpoint)
+            .collect();
+
+        assert_eq!(endpoints.len(), 2);
+        assert_ne!(endpoints[0].node_id, endpoints[1].node_id);
     }
 
     #[test]
