@@ -326,7 +326,7 @@ fn parse_http_response(
     })
 }
 
-fn map_http_error(status: u16, retry_after_ms: Option<u64>, _body: &Value) -> ProviderError {
+fn map_http_error(status: u16, retry_after_ms: Option<u64>, body: &Value) -> ProviderError {
     let (code, message) = match status {
         401 | 403 => (
             ProviderErrorCode::Authentication,
@@ -343,6 +343,10 @@ fn map_http_error(status: u16, retry_after_ms: Option<u64>, _body: &Value) -> Pr
         413 => (
             ProviderErrorCode::ContextLimitExceeded,
             "요청이 Anthropic의 입력 크기 한도를 초과했습니다.",
+        ),
+        400 if is_context_limit_error(body) => (
+            ProviderErrorCode::ContextLimitExceeded,
+            "요청이 Anthropic 모델의 컨텍스트 한도를 초과했습니다.",
         ),
         500..=599 => (
             ProviderErrorCode::ProviderUnavailable,
@@ -364,6 +368,24 @@ fn map_http_error(status: u16, retry_after_ms: Option<u64>, _body: &Value) -> Pr
             .then_some(retry_after_ms)
             .flatten(),
     }
+}
+
+fn is_context_limit_error(body: &Value) -> bool {
+    let Some(error) = body.get("error") else {
+        return false;
+    };
+    if error.get("type").and_then(Value::as_str) != Some("invalid_request_error") {
+        return false;
+    }
+
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    ["prompt is too long", "context window", "context length"]
+        .iter()
+        .any(|marker| message.contains(marker))
 }
 
 #[cfg(test)]
@@ -540,6 +562,37 @@ mod tests {
         assert_eq!(size_error.code, ProviderErrorCode::ContextLimitExceeded);
         assert_eq!(rate_error.code, ProviderErrorCode::RateLimited);
         assert_eq!(rate_error.retry_after_ms, Some(2_000));
+    }
+
+    #[test]
+    fn maps_context_limit_400_without_exposing_provider_message() {
+        let provider_message = "prompt is too long: secret source details";
+        let context_error = map_http_error(
+            400,
+            None,
+            &json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": provider_message
+                }
+            }),
+        );
+        let invalid_request = map_http_error(
+            400,
+            None,
+            &json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "unsupported parameter"
+                }
+            }),
+        );
+
+        assert_eq!(context_error.code, ProviderErrorCode::ContextLimitExceeded);
+        assert!(!context_error.message.contains("secret source details"));
+        assert_eq!(invalid_request.code, ProviderErrorCode::InvalidRequest);
     }
 
     #[test]
