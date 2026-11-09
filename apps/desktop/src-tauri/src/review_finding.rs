@@ -127,7 +127,7 @@ pub struct FindingValidationDiagnostic {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FindingValidationResult {
     pub state: FindingValidationState,

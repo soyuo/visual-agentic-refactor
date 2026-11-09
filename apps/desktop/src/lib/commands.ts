@@ -240,6 +240,33 @@ export interface ReviewFindingsValidationResult {
   diagnostics: ReviewFindingValidationDiagnostic[];
 }
 
+export type FindingDecisionStatus = "pending" | "approved" | "rejected";
+
+export interface StoredFindingDecision {
+  status: FindingDecisionStatus;
+  decidedAtUnixMs: number | null;
+}
+
+export interface StoredReviewSessionSummary {
+  sessionId: string;
+  snapshotId: string;
+  validationState: ReviewFindingsValidationState;
+  createdAtUnixMs: number;
+  findingCount: number;
+}
+
+export interface StoredReviewFinding {
+  findingId: string;
+  finding: ReviewFinding;
+  decision: StoredFindingDecision;
+}
+
+export interface StoredReviewSession extends StoredReviewSessionSummary {
+  projectPath: string;
+  diagnostics: ReviewFindingValidationDiagnostic[];
+  findings: StoredReviewFinding[];
+}
+
 export type ReviewFindingSelection =
   | { file: { relativePath: string; range: SourceRange | null } }
   | { graphNode: { nodeId: string; label: string; range: SourceRange | null } };
@@ -465,6 +492,58 @@ export async function validateReviewFindings(
 ): Promise<ReviewFindingsValidationResult> {
   try {
     return await invoke<ReviewFindingsValidationResult>("validate_review_findings", { request });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function saveReviewSession(
+  request: ValidateReviewFindingsRequest,
+): Promise<StoredReviewSession> {
+  try {
+    return await invoke<StoredReviewSession>("save_review_session", {
+      request,
+    });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function listReviewSessions(
+  projectPath: string,
+): Promise<StoredReviewSessionSummary[]> {
+  try {
+    return await invoke<StoredReviewSessionSummary[]>("list_review_sessions", {
+      request: { projectPath },
+    });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function loadReviewSession(
+  projectPath: string,
+  sessionId: string,
+): Promise<StoredReviewSession | null> {
+  try {
+    return await invoke<StoredReviewSession | null>("load_review_session", {
+      request: { projectPath, sessionId },
+    });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function setFindingDecision(
+  projectPath: string,
+  sessionId: string,
+  findingId: string,
+  status: FindingDecisionStatus,
+): Promise<StoredFindingDecision> {
+  try {
+    return await invoke<StoredFindingDecision>("set_finding_decision", {
+      request: { projectPath, sessionId, findingId, status },
+    });
   } catch (error) {
     throw toAppCommandError(error);
   }

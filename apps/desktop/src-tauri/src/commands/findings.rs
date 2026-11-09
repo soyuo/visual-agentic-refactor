@@ -28,6 +28,14 @@ pub fn validate_review_findings(
     persistence: State<'_, PersistenceState>,
     preview_state: State<'_, ReviewContextPreviewState>,
 ) -> Result<FindingValidationResult, CommandError> {
+    validate_findings_request(&request, &persistence, &preview_state)
+}
+
+pub(crate) fn validate_findings_request(
+    request: &ValidateReviewFindingsRequest,
+    persistence: &PersistenceState,
+    preview_state: &ReviewContextPreviewState,
+) -> Result<FindingValidationResult, CommandError> {
     if request.snapshot_id.trim().is_empty() {
         return Err(invalid("분석 스냅샷을 지정해야 합니다."));
     }
