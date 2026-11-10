@@ -297,6 +297,7 @@ export interface StoredReviewSession extends StoredReviewSessionSummary {
 }
 
 export type FixTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type FixTaskOrchestrationState = "idle" | "applying" | "verifying" | "retry_scheduled" | "failed" | "cancelled" | "completed";
 
 export interface StoredFixTask {
   taskId: string;
@@ -314,6 +315,7 @@ export interface StoredFixTask {
   patchPlan: { intent: string; files: string[] } | null;
   beforePaths: string[];
   afterPaths: string[];
+  orchestration: { state: FixTaskOrchestrationState; retryCount: number; maxRetries: number; retryReason: string | null; failureLog: string | null };
 }
 
 export interface AiReviewResponse {
@@ -643,6 +645,19 @@ export async function updateFixTask(
 ): Promise<StoredFixTask> {
   try {
     return await invoke<StoredFixTask>("update_fix_task", { request: { projectPath, taskId, status, errorMessage } });
+  } catch (error) { throw toAppCommandError(error); }
+}
+
+export async function updateFixTaskOrchestration(
+  projectPath: string,
+  taskId: string,
+  state: FixTaskOrchestrationState,
+  retryCount: number,
+  retryReason: string | null = null,
+  failureLog: string | null = null,
+): Promise<StoredFixTask> {
+  try {
+    return await invoke<StoredFixTask>("update_fix_task_orchestration", { request: { projectPath, taskId, state, retryCount, retryReason, failureLog } });
   } catch (error) { throw toAppCommandError(error); }
 }
 

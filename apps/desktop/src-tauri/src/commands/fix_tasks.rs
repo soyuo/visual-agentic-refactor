@@ -5,7 +5,10 @@ use std::process::Command;
 use tauri::State;
 
 use crate::command_error::{CommandError, CommandErrorCode};
-use crate::persistence::{FixTaskStatus, FixTaskWorkspaceState, PersistenceState, StoredFixTask};
+use crate::persistence::{
+    FixTaskOrchestration, FixTaskOrchestrationState, FixTaskStatus, FixTaskWorkspaceState,
+    PersistenceState, StoredFixTask,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +77,17 @@ pub struct FixPatchDiffResponse {
 pub struct GetFixPatchDiffRequest {
     pub project_path: String,
     pub task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFixTaskOrchestrationRequest {
+    pub project_path: String,
+    pub task_id: String,
+    pub state: FixTaskOrchestrationState,
+    pub retry_count: u32,
+    pub retry_reason: Option<String>,
+    pub failure_log: Option<String>,
 }
 
 #[tauri::command]
@@ -569,6 +583,31 @@ pub fn update_fix_task(
             &request.task_id,
             request.status,
             request.error_message.as_deref(),
+        )
+        .map_err(internal)
+}
+
+#[tauri::command]
+pub fn update_fix_task_orchestration(
+    request: UpdateFixTaskOrchestrationRequest,
+    persistence: State<'_, PersistenceState>,
+) -> Result<StoredFixTask, CommandError> {
+    validate(&request.project_path, &request.task_id, "orchestration")?;
+    if request.retry_count > 2 {
+        return Err(invalid("재시도 횟수는 2회를 넘을 수 없습니다"));
+    }
+    persistence
+        .database()?
+        .update_fix_task_orchestration(
+            &request.project_path,
+            &request.task_id,
+            &FixTaskOrchestration {
+                state: request.state,
+                retry_count: request.retry_count,
+                max_retries: 2,
+                retry_reason: request.retry_reason,
+                failure_log: request.failure_log,
+            },
         )
         .map_err(internal)
 }
