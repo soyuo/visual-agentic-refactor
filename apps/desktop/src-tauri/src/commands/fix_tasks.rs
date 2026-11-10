@@ -1,5 +1,6 @@
 use serde::Deserialize;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::State;
 
@@ -53,10 +54,26 @@ pub fn prepare_fix_task_workspace(
     if !root.is_dir() {
         return Err(invalid("Project path must be an existing directory"));
     }
-    let workspace_root = root.parent().unwrap_or(root).join(format!(
-        ".visual-agentic-refactor-workspaces/{}",
-        request.task_id
-    ));
+    let task = persistence
+        .database()?
+        .load_fix_task(&request.project_path, &request.task_id)
+        .map_err(internal)?
+        .ok_or_else(|| invalid("Fix task was not found"))?;
+    if let (Some(workspace_path), FixTaskWorkspaceState::Ready) =
+        (task.workspace_path.as_deref(), task.workspace_state)
+    {
+        if Path::new(workspace_path).is_dir() {
+            return Ok(task);
+        }
+    }
+    let workspace_root = workspace_path_for(root, &request.task_id)?;
+    if workspace_root.exists() {
+        return Err(internal(
+            "기존 workspace 경로가 남아 있어 먼저 삭제하거나 복구해야 합니다.".to_owned(),
+        ));
+    }
+    fs::create_dir_all(workspace_root.parent().expect("workspace has a parent"))
+        .map_err(|error| internal(format!("workspace 디렉터리를 만들지 못했습니다: {error}")))?;
     let result = Command::new("git")
         .current_dir(root)
         .args(["worktree", "add", "--detach"])
@@ -114,16 +131,8 @@ pub fn remove_fix_task_workspace(
             )
             .map_err(internal);
     };
-    let workspace = Path::new(workspace_path);
-    let expected_parent = Path::new(&request.project_path)
-        .parent()
-        .unwrap_or_else(|| Path::new(&request.project_path))
-        .join(".visual-agentic-refactor-workspaces");
-    if workspace.parent() != Some(expected_parent.as_path()) {
-        return Err(invalid(
-            "Stored workspace path is outside the project workspace directory",
-        ));
-    }
+    let workspace =
+        validate_stored_workspace_path(Path::new(&request.project_path), workspace_path)?;
     let result = Command::new("git")
         .current_dir(&request.project_path)
         .args(["worktree", "remove", "--force"])
@@ -220,9 +229,79 @@ fn validate(project_path: &str, first: &str, second: &str) -> Result<(), Command
     Ok(())
 }
 
+fn workspace_path_for(root: &Path, task_id: &str) -> Result<PathBuf, CommandError> {
+    if task_id.contains('/') || task_id.contains('\\') || task_id == "." || task_id == ".." {
+        return Err(invalid(
+            "Fix task identifier contains an invalid path component",
+        ));
+    }
+    let parent = root
+        .parent()
+        .unwrap_or(root)
+        .join(".visual-agentic-refactor-workspaces");
+    if parent.exists() {
+        let canonical_parent =
+            fs::canonicalize(&parent).map_err(|error| internal(error.to_string()))?;
+        let canonical_root_parent = fs::canonicalize(root.parent().unwrap_or(root))
+            .map_err(|error| internal(error.to_string()))?;
+        if canonical_parent.parent() != Some(canonical_root_parent.as_path()) {
+            return Err(invalid(
+                "Workspace directory must remain under the project parent",
+            ));
+        }
+    }
+    Ok(parent.join(task_id))
+}
+
+fn validate_stored_workspace_path(
+    root: &Path,
+    workspace_path: &str,
+) -> Result<&Path, CommandError> {
+    let workspace = Path::new(workspace_path);
+    let expected_parent = root
+        .parent()
+        .unwrap_or(root)
+        .join(".visual-agentic-refactor-workspaces");
+    if workspace.parent() != Some(expected_parent.as_path()) {
+        return Err(invalid(
+            "Stored workspace path is outside the project workspace directory",
+        ));
+    }
+    if workspace.file_name().is_none() || workspace.file_name() == Some(std::ffi::OsStr::new(".")) {
+        return Err(invalid("Stored workspace path is invalid"));
+    }
+    Ok(workspace)
+}
+
 fn invalid(message: impl Into<String>) -> CommandError {
     CommandError::new(CommandErrorCode::InvalidInput, message)
 }
 fn internal(message: String) -> CommandError {
     CommandError::new(CommandErrorCode::Internal, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_stored_workspace_path, workspace_path_for};
+    use std::path::Path;
+
+    #[test]
+    fn rejects_task_ids_that_escape_workspace_parent() {
+        let root = Path::new("C:/projects/demo");
+        assert!(workspace_path_for(root, "../outside").is_err());
+        assert!(workspace_path_for(root, "nested/task").is_err());
+    }
+
+    #[test]
+    fn accepts_workspace_path_directly_under_expected_parent() {
+        let root = Path::new("C:/projects/demo");
+        assert!(
+            validate_stored_workspace_path(
+                root,
+                "C:/projects/.visual-agentic-refactor-workspaces/task-1"
+            )
+            .is_ok()
+        );
+        assert!(validate_stored_workspace_path(root, "C:/projects/outside/task-1").is_err());
+    }
 }
