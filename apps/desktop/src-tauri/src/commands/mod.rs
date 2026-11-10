@@ -11,3 +11,4 @@ pub mod review_persistence;
 pub mod scanner;
 pub mod spring;
 pub mod tasks;
+pub mod verification;

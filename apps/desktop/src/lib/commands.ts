@@ -37,6 +37,11 @@ export interface OpenAiSubscriptionStatus {
   accountEmail: string | null;
 }
 
+export interface FixVerificationPolicy { timeoutMs: number; outputLimitBytes: number; networkDisabled: boolean }
+export interface VerificationCandidate { id: string; command: string; args: string[]; reason: string }
+export interface VerificationResult { id: string; command: string; args: string[]; status: string; exitCode: number | null; outputSummary: string; error: string | null; startedAtUnixMs: number; endedAtUnixMs: number }
+export interface VerificationCandidates { taskId: string; candidates: VerificationCandidate[] }
+
 export interface OpenProjectResponse {
   path: string;
   name: string;
@@ -314,6 +319,7 @@ export interface StoredFixTask {
   patchPlan: { intent: string; files: string[] } | null;
   beforePaths: string[];
   afterPaths: string[];
+  verification: { policy: FixVerificationPolicy; results: VerificationResult[] } | null;
 }
 
 export interface AiReviewResponse {
@@ -676,6 +682,16 @@ export interface FixPatchDiffResponse {
 
 export async function getFixPatchDiff(projectPath: string, taskId: string): Promise<FixPatchDiffResponse> {
   try { return await invoke<FixPatchDiffResponse>("get_fix_patch_diff", { request: { projectPath, taskId } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
+export async function listFixVerificationCandidates(projectPath: string, taskId: string): Promise<VerificationCandidates> {
+  try { return await invoke<VerificationCandidates>("list_fix_verification_candidates", { request: { projectPath, taskId, approved: false } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
+export async function runFixVerification(projectPath: string, taskId: string, policy?: FixVerificationPolicy): Promise<StoredFixTask> {
+  try { return await invoke<StoredFixTask>("run_fix_verification", { request: { projectPath, taskId, approved: true, policy } }); }
   catch (error) { throw toAppCommandError(error); }
 }
 

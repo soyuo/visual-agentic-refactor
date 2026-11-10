@@ -611,7 +611,7 @@ fn workspace_path_for(root: &Path, task_id: &str) -> Result<PathBuf, CommandErro
     Ok(parent.join(task_id))
 }
 
-fn validate_stored_workspace_path(
+pub(crate) fn validate_stored_workspace_path(
     root: &Path,
     workspace_path: &str,
     task_id: &str,
