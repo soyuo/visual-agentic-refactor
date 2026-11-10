@@ -53,24 +53,24 @@ pub fn evaluate_fix_commit_readiness(
             },
         );
     }
-    if let Some(expected) = request.expected_base_commit.as_deref() {
-        if task.base_commit.as_deref() != Some(expected) {
-            return save(
-                &request,
-                &persistence,
-                FixCommitReadiness {
-                    state: "blocked".into(),
-                    finding_id: task.finding_id.clone(),
-                    changed_files,
-                    verification,
-                    base_commit: task.base_commit.clone(),
-                    approver_action: None,
-                    approved_at_unix_ms: None,
-                    evaluated_at_unix_ms: now(),
-                    reason: Some("base commit이 일치하지 않습니다.".into()),
-                },
-            );
-        }
+    if task.base_commit.is_none()
+        || request.expected_base_commit.as_deref() != task.base_commit.as_deref()
+    {
+        return save(
+            &request,
+            &persistence,
+            FixCommitReadiness {
+                state: "blocked".into(),
+                finding_id: task.finding_id.clone(),
+                changed_files,
+                verification,
+                base_commit: task.base_commit.clone(),
+                approver_action: None,
+                approved_at_unix_ms: None,
+                evaluated_at_unix_ms: now(),
+                reason: Some("base commit이 없거나 일치하지 않습니다.".into()),
+            },
+        );
     }
     let passed = task
         .verification
