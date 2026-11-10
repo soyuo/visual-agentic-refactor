@@ -311,6 +311,9 @@ export interface StoredFixTask {
   workspacePath: string | null;
   workspaceState: "not_created" | "ready" | "removed" | "error";
   workspaceError: string | null;
+  patchPlan: { intent: string; files: string[] } | null;
+  beforePaths: string[];
+  afterPaths: string[];
 }
 
 export interface AiReviewResponse {
@@ -653,6 +656,16 @@ export async function removeFixTaskWorkspace(projectPath: string, taskId: string
   try {
     return await invoke<StoredFixTask>("remove_fix_task_workspace", { request: { projectPath, taskId } });
   } catch (error) { throw toAppCommandError(error); }
+}
+
+export async function createFixPatchPlan(projectPath: string, taskId: string, intent: string, files: string[]): Promise<StoredFixTask> {
+  try { return await invoke<StoredFixTask>("create_fix_patch_plan", { request: { projectPath, taskId, intent, files } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
+export async function applyFixPatch(projectPath: string, taskId: string, patch: string): Promise<StoredFixTask> {
+  try { return await invoke<StoredFixTask>("apply_fix_patch", { request: { projectPath, taskId, patch } }); }
+  catch (error) { throw toAppCommandError(error); }
 }
 
 export async function analyzeSpringProject(

@@ -15,7 +15,7 @@ use crate::review_finding::{
 
 use crate::command_error::{CommandError, CommandErrorCode};
 
-const CURRENT_SCHEMA_VERSION: i64 = 6;
+const CURRENT_SCHEMA_VERSION: i64 = 7;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.sql");
 const REVIEW_MIGRATION: &str = include_str!("../migrations/0003_review_persistence.sql");
@@ -24,6 +24,8 @@ const FIX_TASK_GIT_SNAPSHOT_MIGRATION: &str =
     include_str!("../migrations/0005_fix_task_git_snapshot.sql");
 const FIX_TASK_WORKSPACE_MIGRATION: &str =
     include_str!("../migrations/0006_fix_task_workspace.sql");
+const FIX_TASK_PATCH_PLAN_MIGRATION: &str =
+    include_str!("../migrations/0007_fix_task_patch_plan.sql");
 
 static NEXT_REVIEW_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -94,9 +96,19 @@ pub struct StoredFixTask {
     pub workspace_path: Option<String>,
     pub workspace_state: FixTaskWorkspaceState,
     pub workspace_error: Option<String>,
+    pub patch_plan: Option<FixPatchPlan>,
+    pub before_paths: Vec<String>,
+    pub after_paths: Vec<String>,
     pub error_message: Option<String>,
     pub created_at_unix_ms: i64,
     pub updated_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FixPatchPlan {
+    pub intent: String,
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -958,16 +970,65 @@ impl ProjectDatabase {
             .lock()
             .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
         connection.query_row(
-            "SELECT p.root_path, t.session_id, t.finding_id, t.status, t.target_paths_json, t.original_git_status_json, t.workspace_path, t.workspace_state, t.workspace_error, t.error_message, t.created_at_unix_ms, t.updated_at_unix_ms
+            "SELECT p.root_path, t.session_id, t.finding_id, t.status, t.target_paths_json, t.original_git_status_json, t.workspace_path, t.workspace_state, t.workspace_error, t.patch_plan_json, t.before_paths_json, t.after_paths_json, t.error_message, t.created_at_unix_ms, t.updated_at_unix_ms
              FROM fix_tasks t JOIN projects p ON p.id = t.project_id WHERE p.root_path = ?1 AND t.task_id = ?2",
             params![root_path, task_id], |row| {
                 let paths: Vec<String> = serde_json::from_str(&row.get::<_, String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let original_git_status: GitStatusResponse = serde_json::from_str(&row.get::<_, String>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let status = fix_task_status_from_db(&row.get::<_, String>(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let workspace_state = fix_task_workspace_state_from_db(&row.get::<_, String>(7)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                Ok(StoredFixTask { task_id: task_id.to_owned(), project_path: row.get(0)?, session_id: row.get(1)?, finding_id: row.get(2)?, status, target_paths: paths, original_git_status, workspace_path: row.get(6)?, workspace_state, workspace_error: row.get(8)?, error_message: row.get(9)?, created_at_unix_ms: row.get(10)?, updated_at_unix_ms: row.get(11)? })
+                let patch_plan = row.get::<_, Option<String>>(9)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
+                let before_paths = row.get::<_, Option<String>>(10)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
+                let after_paths = row.get::<_, Option<String>>(11)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
+                Ok(StoredFixTask { task_id: task_id.to_owned(), project_path: row.get(0)?, session_id: row.get(1)?, finding_id: row.get(2)?, status, target_paths: paths, original_git_status, workspace_path: row.get(6)?, workspace_state, workspace_error: row.get(8)?, patch_plan, before_paths, after_paths, error_message: row.get(12)?, created_at_unix_ms: row.get(13)?, updated_at_unix_ms: row.get(14)? })
             },
         ).optional().map_err(|error| format!("수정 작업을 불러오지 못했습니다: {error}"))
+    }
+
+    pub fn save_fix_patch_plan(
+        &self,
+        root_path: &str,
+        task_id: &str,
+        plan: &FixPatchPlan,
+        before_paths: &[String],
+    ) -> Result<StoredFixTask, String> {
+        let plan_json = serde_json::to_string(plan)
+            .map_err(|error| format!("패치 계획을 저장 형식으로 바꾸지 못했습니다: {error}"))?;
+        let before_json = serde_json::to_string(before_paths)
+            .map_err(|error| format!("파일 목록을 저장 형식으로 바꾸지 못했습니다: {error}"))?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let updated = connection.execute("UPDATE fix_tasks SET patch_plan_json = ?1, before_paths_json = ?2, updated_at_unix_ms = ?3 WHERE task_id = ?4 AND project_id = (SELECT id FROM projects WHERE root_path = ?5)", params![plan_json, before_json, current_time_unix_ms()?, task_id, root_path]).map_err(|error| format!("패치 계획을 저장하지 못했습니다: {error}"))?;
+        if updated == 0 {
+            return Err("수정 작업을 찾을 수 없습니다.".to_owned());
+        }
+        drop(connection);
+        self.load_fix_task(root_path, task_id)?
+            .ok_or_else(|| "저장한 수정 작업을 다시 불러오지 못했습니다.".to_owned())
+    }
+
+    pub fn save_fix_patch_result(
+        &self,
+        root_path: &str,
+        task_id: &str,
+        after_paths: &[String],
+    ) -> Result<StoredFixTask, String> {
+        let after_json = serde_json::to_string(after_paths).map_err(|error| {
+            format!("변경 파일 목록을 저장 형식으로 바꾸지 못했습니다: {error}")
+        })?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let updated = connection.execute("UPDATE fix_tasks SET after_paths_json = ?1, updated_at_unix_ms = ?2 WHERE task_id = ?3 AND project_id = (SELECT id FROM projects WHERE root_path = ?4)", params![after_json, current_time_unix_ms()?, task_id, root_path]).map_err(|error| format!("패치 결과를 저장하지 못했습니다: {error}"))?;
+        if updated == 0 {
+            return Err("수정 작업을 찾을 수 없습니다.".to_owned());
+        }
+        drop(connection);
+        self.load_fix_task(root_path, task_id)?
+            .ok_or_else(|| "저장한 수정 작업을 다시 불러오지 못했습니다.".to_owned())
     }
 
     pub fn update_fix_task(
@@ -1009,6 +1070,7 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
             4 => transaction.execute_batch(FIX_TASK_MIGRATION)?,
             5 => transaction.execute_batch(FIX_TASK_GIT_SNAPSHOT_MIGRATION)?,
             6 => transaction.execute_batch(FIX_TASK_WORKSPACE_MIGRATION)?,
+            7 => transaction.execute_batch(FIX_TASK_PATCH_PLAN_MIGRATION)?,
             _ => return Err(rusqlite::Error::InvalidQuery),
         }
         transaction.pragma_update(None, "user_version", next_version)?;
