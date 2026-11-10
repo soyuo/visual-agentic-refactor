@@ -551,7 +551,7 @@ fn internal(message: String) -> CommandError {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_stored_workspace_path, workspace_path_for};
+    use super::{patch_paths, validate_stored_workspace_path, workspace_path_for};
     use std::path::Path;
 
     #[test]
@@ -575,5 +575,17 @@ mod tests {
         assert!(
             validate_stored_workspace_path(root, "C:/projects/outside/task-1", "task-1").is_err()
         );
+    }
+
+    #[test]
+    fn rejects_patch_with_mismatched_source_and_destination_headers() {
+        let patch = "--- a/src/Other.kt\n+++ b/src/Main.kt\n@@ -1 +1 @@\n-old\n+new\n";
+        assert!(patch_paths(patch).is_err());
+    }
+
+    #[test]
+    fn extracts_matching_repository_relative_patch_path() {
+        let patch = "--- a/src/Main.kt\told\n+++ b/src/Main.kt\tnew\n@@ -1 +1 @@\n-old\n+new\n";
+        assert_eq!(patch_paths(patch).unwrap(), vec!["src/Main.kt"]);
     }
 }
