@@ -172,15 +172,22 @@ pub fn apply_fix_patch(
     }
     let output = run_git_apply(workspace, &request.patch, false)?;
     if !output.status.success() {
-        return Err(invalid(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
+        let rollback_message = run_git_apply_reverse(workspace, &request.patch)
+            .err()
+            .map(|error| format!("; rollback failed: {error}"))
+            .unwrap_or_default();
+        return Err(invalid(format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+            rollback_message
+        )));
     }
     let after = changed_paths(workspace)?;
     if after
         .iter()
         .any(|path| !plan.files.iter().any(|allowed| allowed == path))
     {
+        let _ = run_git_apply_reverse(workspace, &request.patch);
         return Err(invalid("Patch changed a file outside the approved plan"));
     }
     persistence
@@ -261,11 +268,30 @@ fn run_git_apply(
     patch: &str,
     check_only: bool,
 ) -> Result<std::process::Output, CommandError> {
+    run_git_apply_with_mode(workspace, patch, check_only, false)
+}
+
+fn run_git_apply_reverse(
+    workspace: &Path,
+    patch: &str,
+) -> Result<std::process::Output, CommandError> {
+    run_git_apply_with_mode(workspace, patch, false, true)
+}
+
+fn run_git_apply_with_mode(
+    workspace: &Path,
+    patch: &str,
+    check_only: bool,
+    reverse: bool,
+) -> Result<std::process::Output, CommandError> {
     use std::io::Write;
     let mut command = Command::new("git");
     command
         .current_dir(workspace)
         .args(["apply", "--whitespace=nowarn"]);
+    if reverse {
+        command.arg("--reverse");
+    }
     if check_only {
         command.arg("--check");
     }
