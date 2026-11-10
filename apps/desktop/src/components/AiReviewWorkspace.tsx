@@ -15,6 +15,8 @@ import {
   listFixTasks,
   prepareFixTaskWorkspace,
   removeFixTaskWorkspace,
+  listFixVerificationCandidates,
+  runFixVerification,
   loadReviewSession,
   approveReviewTransfer,
   runAiReview,
@@ -37,6 +39,7 @@ import {
   type StoredReviewSessionSummary,
   type StoredFixTask,
   type FixTaskOrchestrationState,
+  type VerificationCandidate,
 } from "../lib/commands";
 import { isSensitiveTransferPath } from "../lib/externalTransferSafety";
 import { findingDecisionLabel, reviewOutcomeLabel, reviewOutcomeState } from "../lib/aiReviewViewModel";
@@ -89,6 +92,8 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [patchTaskId, setPatchTaskId] = createSignal<string | null>(null);
   const [patchDrafts, setPatchDrafts] = createSignal<Record<string, string>>({});
   const [patchDiffs, setPatchDiffs] = createSignal<Record<string, string>>({});
+  const [verificationCandidates, setVerificationCandidates] = createSignal<Record<string, VerificationCandidate[]>>({});
+  const [verificationTaskId, setVerificationTaskId] = createSignal<string | null>(null);
   let previewRequestVersion = 0;
   let sessionRequestVersion = 0;
   let consentDialog: HTMLElement | undefined;
@@ -560,6 +565,36 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     }
   }
 
+  async function loadVerificationCandidates(task: StoredFixTask) {
+    const projectPath = props.project?.path;
+    if (!projectPath || verificationTaskId() !== null || task.workspaceState !== "ready") return;
+    setVerificationTaskId(task.taskId);
+    setSessionError(null);
+    try {
+      const result = await listFixVerificationCandidates(projectPath, task.taskId);
+      setVerificationCandidates((current) => ({ ...current, [task.taskId]: result.candidates }));
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setVerificationTaskId(null);
+    }
+  }
+
+  async function runVerification(task: StoredFixTask) {
+    const projectPath = props.project?.path;
+    if (!projectPath || verificationTaskId() !== null || task.workspaceState !== "ready") return;
+    setVerificationTaskId(task.taskId);
+    setSessionError(null);
+    try {
+      const updated = await runFixVerification(projectPath, task.taskId);
+      setFixTasks((tasks) => tasks.map((item) => item.taskId === updated.taskId ? updated : item));
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setVerificationTaskId(null);
+    }
+  }
+
   return (
     <div class="ai-review-workspace">
       <div class="content-heading">
@@ -860,6 +895,20 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                                   {(diff) => <pre class="patch-diff-preview" aria-label="격리 workspace diff">{diff()}</pre>}
                                 </Show>
                                 <Show when={task.afterPaths.length > 0}><span role="status">변경 기록: {task.afterPaths.join(", ")}</span></Show>
+                                <div class="finding-patch-controls">
+                                  <button class="secondary-button" type="button" disabled={verificationTaskId() !== null || task.workspaceState !== "ready"} onClick={() => void loadVerificationCandidates(task)}>
+                                    {verificationTaskId() === task.taskId ? "검증 후보 조회 중…" : "검증 후보 조회"}
+                                  </button>
+                                  <Show when={(verificationCandidates()[task.taskId]?.length ?? 0) > 0}>
+                                    <span role="status">{verificationCandidates()[task.taskId].map((candidate) => `${candidate.command} ${candidate.args.join(" ")}`).join(" · ")}</span>
+                                    <button class="secondary-button" type="button" disabled={verificationTaskId() !== null} onClick={() => void runVerification(task)}>
+                                      {verificationTaskId() === task.taskId ? "검증 실행 중…" : "승인 후 검증 실행"}
+                                    </button>
+                                  </Show>
+                                  <Show when={task.verification} keyed>
+                                    {(verification) => <ul class="review-diagnostics" aria-label="패치 검증 결과">{verification.results.map((result) => <li>{result.id}: {result.status}{result.error ? ` · ${result.error}` : ""}</li>)}</ul>}
+                                  </Show>
+                                </div>
                               </>}
                             </Show>
                           </div>
