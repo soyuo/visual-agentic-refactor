@@ -179,30 +179,41 @@ fn validate_patch_path(
 
 fn patch_paths(patch: &str) -> Result<Vec<String>, CommandError> {
     let mut paths = Vec::new();
-    for line in patch.lines().filter(|line| line.starts_with("+++ b/")) {
-        let path = line
-            .trim_start_matches("+++ b/")
-            .split('\t')
-            .next()
-            .unwrap_or("");
-        if path == "/dev/null" || path.is_empty() {
+    let mut headers = patch.lines().filter(|line| line.starts_with("--- "));
+    while let Some(old_header) = headers.next() {
+        let Some(new_header) = headers.next() else {
+            return Err(invalid("Malformed patch output"));
+        };
+        if !new_header.starts_with("+++ ") {
             return Err(invalid("Malformed patch file header"));
         }
-        let candidate = Path::new(path);
+        let old_path = old_header[4..].split('\t').next().unwrap_or("");
+        let new_path = new_header[4..].split('\t').next().unwrap_or("");
+        if !old_path.starts_with("a/") || !new_path.starts_with("b/") {
+            return Err(invalid("Patch must use repository-relative file headers"));
+        }
+        let old_path = &old_path[2..];
+        let new_path = &new_path[2..];
+        if old_path.is_empty() || new_path.is_empty() || old_path != new_path {
+            return Err(invalid("Patch cannot rename or delete files"));
+        }
+        let candidate = Path::new(new_path);
         if candidate.is_absolute()
-            || path.contains('\\')
-            || path.split('/').any(|part| part == ".." || part.is_empty())
-            || path.starts_with(".git/")
-            || path.contains("/target/")
-            || path.ends_with(".generated")
+            || new_path.contains('\\')
+            || new_path
+                .split('/')
+                .any(|part| part == ".." || part.is_empty())
+            || new_path.starts_with(".git/")
+            || new_path.contains("/target/")
+            || new_path.ends_with(".generated")
         {
             return Err(invalid("Patch path is outside the project or is generated"));
         }
-        if !paths.iter().any(|item| item == path) {
-            paths.push(path.to_owned());
+        if !paths.iter().any(|item| item == new_path) {
+            paths.push(new_path.to_owned());
         }
     }
-    if patch.lines().any(|line| line.starts_with("--- ")) && paths.is_empty() {
+    if paths.is_empty() {
         return Err(invalid("Malformed patch output"));
     }
     Ok(paths)
