@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 const MAX_DISPLAYED_CHANGES: usize = 100;
 const MAX_GIT_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStatusResponse {
     pub state: GitStatusState,
@@ -22,7 +22,7 @@ pub struct GitStatusResponse {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum GitStatusState {
     Available,
@@ -31,14 +31,14 @@ pub enum GitStatusState {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum GitFileChangeKind {
     Tracked,
     Untracked,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitFileChange {
     pub path: String,
