@@ -296,6 +296,20 @@ export interface StoredReviewSession extends StoredReviewSessionSummary {
   findings: StoredReviewFinding[];
 }
 
+export type FixTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface StoredFixTask {
+  taskId: string;
+  projectPath: string;
+  sessionId: string;
+  findingId: string;
+  status: FixTaskStatus;
+  targetPaths: string[];
+  errorMessage: string | null;
+  createdAtUnixMs: number;
+  updatedAtUnixMs: number;
+}
+
 export interface AiReviewResponse {
   session: StoredReviewSession;
   providerId: string;
@@ -601,6 +615,29 @@ export async function setFindingDecision(
   } catch (error) {
     throw toAppCommandError(error);
   }
+}
+
+export async function createFixTask(projectPath: string, sessionId: string, findingId: string): Promise<StoredFixTask> {
+  try {
+    return await invoke<StoredFixTask>("create_fix_task", { request: { projectPath, sessionId, findingId } });
+  } catch (error) { throw toAppCommandError(error); }
+}
+
+export async function listFixTasks(projectPath: string): Promise<StoredFixTask[]> {
+  try {
+    return await invoke<StoredFixTask[]>("list_fix_tasks", { request: { projectPath } });
+  } catch (error) { throw toAppCommandError(error); }
+}
+
+export async function updateFixTask(
+  projectPath: string,
+  taskId: string,
+  status: FixTaskStatus,
+  errorMessage: string | null = null,
+): Promise<StoredFixTask> {
+  try {
+    return await invoke<StoredFixTask>("update_fix_task", { request: { projectPath, taskId, status, errorMessage } });
+  } catch (error) { throw toAppCommandError(error); }
 }
 
 export async function analyzeSpringProject(

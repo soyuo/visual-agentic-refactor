@@ -14,10 +14,11 @@ use crate::review_finding::{
 
 use crate::command_error::{CommandError, CommandErrorCode};
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.sql");
 const REVIEW_MIGRATION: &str = include_str!("../migrations/0003_review_persistence.sql");
+const FIX_TASK_MIGRATION: &str = include_str!("../migrations/0004_fix_tasks.sql");
 
 static NEXT_REVIEW_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -44,6 +45,30 @@ pub enum FindingDecisionStatus {
     Pending,
     Approved,
     Rejected,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FixTaskStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredFixTask {
+    pub task_id: String,
+    pub project_path: String,
+    pub session_id: String,
+    pub finding_id: String,
+    pub status: FixTaskStatus,
+    pub target_paths: Vec<String>,
+    pub error_message: Option<String>,
+    pub created_at_unix_ms: i64,
+    pub updated_at_unix_ms: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -756,6 +781,27 @@ fn decision_status_from_db(value: &str) -> Result<FindingDecisionStatus, String>
     }
 }
 
+fn fix_task_status_db(value: FixTaskStatus) -> &'static str {
+    match value {
+        FixTaskStatus::Queued => "queued",
+        FixTaskStatus::Running => "running",
+        FixTaskStatus::Completed => "completed",
+        FixTaskStatus::Failed => "failed",
+        FixTaskStatus::Cancelled => "cancelled",
+    }
+}
+
+fn fix_task_status_from_db(value: &str) -> Result<FixTaskStatus, String> {
+    match value {
+        "queued" => Ok(FixTaskStatus::Queued),
+        "running" => Ok(FixTaskStatus::Running),
+        "completed" => Ok(FixTaskStatus::Completed),
+        "failed" => Ok(FixTaskStatus::Failed),
+        "cancelled" => Ok(FixTaskStatus::Cancelled),
+        _ => Err(format!("알 수 없는 수정 작업 상태: {value}")),
+    }
+}
+
 fn current_time_unix_ms() -> Result<i64, String> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -773,6 +819,110 @@ fn checked_sqlite_integer(value: Option<u64>, label: &str) -> Result<Option<i64>
         .transpose()
 }
 
+impl ProjectDatabase {
+    pub fn create_fix_task(
+        &self,
+        root_path: &str,
+        session_id: &str,
+        finding_id: &str,
+    ) -> Result<StoredFixTask, String> {
+        let now = current_time_unix_ms()?;
+        let task_id = format!(
+            "fix-{now}-{}",
+            NEXT_REVIEW_SESSION_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("수정 작업을 생성하지 못했습니다: {error}"))?;
+        let (project_id, target_paths_json): (i64, String) = transaction.query_row(
+            "SELECT f.project_id, COALESCE(json_group_array(DISTINCT e.relative_path), json('[]'))
+             FROM review_findings f
+             JOIN finding_decisions d ON d.project_id = f.project_id AND d.session_id = f.session_id AND d.finding_id = f.finding_id
+             LEFT JOIN review_finding_evidence e ON e.project_id = f.project_id AND e.session_id = f.session_id AND e.finding_id = f.finding_id
+             WHERE f.project_id = (SELECT id FROM projects WHERE root_path = ?1) AND f.session_id = ?2 AND f.finding_id = ?3 AND d.status = 'approved'
+             GROUP BY f.project_id",
+            params![root_path, session_id, finding_id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(|_| "승인된 finding만 수정 작업으로 만들 수 있습니다.".to_owned())?;
+        transaction.execute(
+            "INSERT INTO fix_tasks (task_id, project_id, session_id, finding_id, status, target_paths_json, error_message, created_at_unix_ms, updated_at_unix_ms)
+             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, NULL, ?6, ?6)",
+            params![task_id, project_id, session_id, finding_id, target_paths_json, now],
+        ).map_err(|error| format!("수정 작업을 저장하지 못했습니다: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("수정 작업 저장을 완료하지 못했습니다: {error}"))?;
+        drop(connection);
+        self.load_fix_task(root_path, &task_id)?
+            .ok_or_else(|| "생성한 수정 작업을 다시 불러오지 못했습니다.".to_owned())
+    }
+
+    pub fn list_fix_tasks(&self, root_path: &str) -> Result<Vec<StoredFixTask>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let mut statement = connection.prepare("SELECT task_id FROM fix_tasks WHERE project_id = (SELECT id FROM projects WHERE root_path = ?1) ORDER BY updated_at_unix_ms DESC, task_id DESC").map_err(|error| format!("수정 작업 조회를 준비하지 못했습니다: {error}"))?;
+        let ids = statement
+            .query_map([root_path], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("수정 작업을 조회하지 못했습니다: {error}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| format!("수정 작업 결과를 읽지 못했습니다: {error}"))?;
+        drop(statement);
+        drop(connection);
+        ids.iter()
+            .map(|id| {
+                self.load_fix_task(root_path, id)?
+                    .ok_or_else(|| "수정 작업이 조회 중 사라졌습니다.".to_owned())
+            })
+            .collect()
+    }
+
+    pub fn load_fix_task(
+        &self,
+        root_path: &str,
+        task_id: &str,
+    ) -> Result<Option<StoredFixTask>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        connection.query_row(
+            "SELECT p.root_path, t.session_id, t.finding_id, t.status, t.target_paths_json, t.error_message, t.created_at_unix_ms, t.updated_at_unix_ms
+             FROM fix_tasks t JOIN projects p ON p.id = t.project_id WHERE p.root_path = ?1 AND t.task_id = ?2",
+            params![root_path, task_id], |row| {
+                let paths: Vec<String> = serde_json::from_str(&row.get::<_, String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let status = fix_task_status_from_db(&row.get::<_, String>(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                Ok(StoredFixTask { task_id: task_id.to_owned(), project_path: row.get(0)?, session_id: row.get(1)?, finding_id: row.get(2)?, status, target_paths: paths, error_message: row.get(5)?, created_at_unix_ms: row.get(6)?, updated_at_unix_ms: row.get(7)? })
+            },
+        ).optional().map_err(|error| format!("수정 작업을 불러오지 못했습니다: {error}"))
+    }
+
+    pub fn update_fix_task(
+        &self,
+        root_path: &str,
+        task_id: &str,
+        status: FixTaskStatus,
+        error_message: Option<&str>,
+    ) -> Result<StoredFixTask, String> {
+        let now = current_time_unix_ms()?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let updated = connection.execute("UPDATE fix_tasks SET status = ?1, error_message = ?2, updated_at_unix_ms = ?3 WHERE task_id = ?4 AND project_id = (SELECT id FROM projects WHERE root_path = ?5)", params![fix_task_status_db(status), error_message, now, task_id, root_path]).map_err(|error| format!("수정 작업 상태를 갱신하지 못했습니다: {error}"))?;
+        if updated == 0 {
+            return Err("수정 작업을 찾을 수 없습니다.".to_owned());
+        }
+        drop(connection);
+        self.load_fix_task(root_path, task_id)?
+            .ok_or_else(|| "갱신한 수정 작업을 다시 불러오지 못했습니다.".to_owned())
+    }
+}
+
 fn migrate(connection: &Connection) -> rusqlite::Result<()> {
     let mut schema_version: i64 =
         connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -787,6 +937,7 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
             1 => transaction.execute_batch(INITIAL_MIGRATION)?,
             2 => transaction.execute_batch(GRAPH_MIGRATION)?,
             3 => transaction.execute_batch(REVIEW_MIGRATION)?,
+            4 => transaction.execute_batch(FIX_TASK_MIGRATION)?,
             _ => return Err(rusqlite::Error::InvalidQuery),
         }
         transaction.pragma_update(None, "user_version", next_version)?;
@@ -928,7 +1079,7 @@ mod tests {
         drop(connection);
 
         let database = ProjectDatabase::open(data_dir.clone()).unwrap();
-        assert_eq!(database.schema_version(), 3);
+        assert_eq!(database.schema_version(), 4);
         let connection = database.connection.lock().unwrap();
         let snapshot_id: String = connection
             .query_row("SELECT snapshot_id FROM graph_snapshots", [], |row| {
@@ -1000,7 +1151,7 @@ mod tests {
 
         let database =
             ProjectDatabase::open(data_dir.clone()).expect("schema migrations should succeed");
-        assert_eq!(database.schema_version(), 3);
+        assert_eq!(database.schema_version(), 4);
         let connection = database.connection.lock().unwrap();
         let project_name: String = connection
             .query_row("SELECT name FROM projects WHERE id = 1", [], |row| {
