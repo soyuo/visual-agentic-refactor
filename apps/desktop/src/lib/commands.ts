@@ -308,6 +308,9 @@ export interface StoredFixTask {
   errorMessage: string | null;
   createdAtUnixMs: number;
   updatedAtUnixMs: number;
+  workspacePath: string | null;
+  workspaceState: "not_created" | "ready" | "removed" | "error";
+  workspaceError: string | null;
 }
 
 export interface AiReviewResponse {
@@ -637,6 +640,18 @@ export async function updateFixTask(
 ): Promise<StoredFixTask> {
   try {
     return await invoke<StoredFixTask>("update_fix_task", { request: { projectPath, taskId, status, errorMessage } });
+  } catch (error) { throw toAppCommandError(error); }
+}
+
+export async function prepareFixTaskWorkspace(projectPath: string, taskId: string): Promise<StoredFixTask> {
+  try {
+    return await invoke<StoredFixTask>("prepare_fix_task_workspace", { request: { projectPath, taskId } });
+  } catch (error) { throw toAppCommandError(error); }
+}
+
+export async function removeFixTaskWorkspace(projectPath: string, taskId: string): Promise<StoredFixTask> {
+  try {
+    return await invoke<StoredFixTask>("remove_fix_task_workspace", { request: { projectPath, taskId } });
   } catch (error) { throw toAppCommandError(error); }
 }
 

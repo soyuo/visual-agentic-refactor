@@ -1,0 +1,1 @@
+ALTER TABLE fix_tasks ADD COLUMN original_git_status_json TEXT NOT NULL DEFAULT '{"state":"error","branch":null,"head":null,"trackedCount":0,"modifiedCount":0,"untrackedCount":0,"changes":[],"omittedChangeCount":0,"message":"기존 작업에서 원본 Git 상태를 사용할 수 없습니다."}';
