@@ -665,6 +665,7 @@ pub fn update_fix_task_orchestration(
                 max_retries: 2,
                 retry_reason: request.retry_reason,
                 failure_log: request.failure_log,
+                integration: task.orchestration.integration,
             },
         )
         .map_err(internal)

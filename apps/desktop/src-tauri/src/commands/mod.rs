@@ -6,6 +6,7 @@ pub mod findings;
 pub mod fix_tasks;
 pub mod git;
 pub mod graph;
+pub mod integration;
 pub mod project;
 pub mod readiness;
 pub mod review_persistence;

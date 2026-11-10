@@ -55,6 +55,7 @@ pub fn run() {
             commands::fix_tasks::create_fix_patch_plan,
             commands::fix_tasks::apply_fix_patch,
             commands::fix_tasks::get_fix_patch_diff,
+            commands::integration::integrate_fix_task_commits,
             commands::verification::list_fix_verification_candidates,
             commands::verification::run_fix_verification,
             commands::readiness::evaluate_fix_commit_readiness,
