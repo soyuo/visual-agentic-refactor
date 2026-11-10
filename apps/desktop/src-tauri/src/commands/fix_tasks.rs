@@ -62,8 +62,12 @@ pub fn prepare_fix_task_workspace(
     if let (Some(workspace_path), FixTaskWorkspaceState::Ready) =
         (task.workspace_path.as_deref(), task.workspace_state)
     {
-        if Path::new(workspace_path).is_dir() {
-            return Ok(task);
+        if let Ok(workspace) =
+            validate_stored_workspace_path(root, workspace_path, &request.task_id)
+        {
+            if workspace.is_dir() {
+                return Ok(task);
+            }
         }
     }
     let workspace_root = workspace_path_for(root, &request.task_id)?;
@@ -80,7 +84,7 @@ pub fn prepare_fix_task_workspace(
         .arg(&workspace_root)
         .arg("HEAD")
         .output()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| internal(error.to_string()))?;
     if !result.status.success() {
         let message = String::from_utf8_lossy(&result.stderr).trim().to_owned();
         let _ = persistence.database()?.update_fix_task_workspace(
@@ -131,14 +135,17 @@ pub fn remove_fix_task_workspace(
             )
             .map_err(internal);
     };
-    let workspace =
-        validate_stored_workspace_path(Path::new(&request.project_path), workspace_path)?;
+    let workspace = validate_stored_workspace_path(
+        Path::new(&request.project_path),
+        workspace_path,
+        &request.task_id,
+    )?;
     let result = Command::new("git")
         .current_dir(&request.project_path)
         .args(["worktree", "remove", "--force"])
         .arg(workspace)
         .output()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| internal(error.to_string()))?;
     if !result.status.success() {
         let message = String::from_utf8_lossy(&result.stderr).trim().to_owned();
         return persistence
@@ -240,6 +247,13 @@ fn workspace_path_for(root: &Path, task_id: &str) -> Result<PathBuf, CommandErro
         .unwrap_or(root)
         .join(".visual-agentic-refactor-workspaces");
     if parent.exists() {
+        if fs::symlink_metadata(&parent)
+            .map_err(|error| internal(error.to_string()))?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(invalid("Workspace directory must not be a symlink"));
+        }
         let canonical_parent =
             fs::canonicalize(&parent).map_err(|error| internal(error.to_string()))?;
         let canonical_root_parent = fs::canonicalize(root.parent().unwrap_or(root))
@@ -256,6 +270,7 @@ fn workspace_path_for(root: &Path, task_id: &str) -> Result<PathBuf, CommandErro
 fn validate_stored_workspace_path(
     root: &Path,
     workspace_path: &str,
+    task_id: &str,
 ) -> Result<&Path, CommandError> {
     let workspace = Path::new(workspace_path);
     let expected_parent = root
@@ -269,6 +284,36 @@ fn validate_stored_workspace_path(
     }
     if workspace.file_name().is_none() || workspace.file_name() == Some(std::ffi::OsStr::new(".")) {
         return Err(invalid("Stored workspace path is invalid"));
+    }
+    if workspace.file_name() != Some(std::ffi::OsStr::new(task_id)) {
+        return Err(invalid("Stored workspace path does not match the task"));
+    }
+    if expected_parent.exists()
+        && fs::symlink_metadata(&expected_parent)
+            .map_err(|error| internal(error.to_string()))?
+            .file_type()
+            .is_symlink()
+    {
+        return Err(invalid("Workspace directory must not be a symlink"));
+    }
+    if workspace.exists()
+        && fs::symlink_metadata(workspace)
+            .map_err(|error| internal(error.to_string()))?
+            .file_type()
+            .is_symlink()
+    {
+        return Err(invalid("Stored workspace path must not be a symlink"));
+    }
+    if workspace.exists() && expected_parent.exists() {
+        let canonical_workspace =
+            fs::canonicalize(workspace).map_err(|error| internal(error.to_string()))?;
+        let canonical_parent =
+            fs::canonicalize(&expected_parent).map_err(|error| internal(error.to_string()))?;
+        if canonical_workspace != canonical_parent.join(task_id) {
+            return Err(invalid(
+                "Stored workspace path must remain under the project workspace directory",
+            ));
+        }
     }
     Ok(workspace)
 }
@@ -298,10 +343,13 @@ mod tests {
         assert!(
             validate_stored_workspace_path(
                 root,
-                "C:/projects/.visual-agentic-refactor-workspaces/task-1"
+                "C:/projects/.visual-agentic-refactor-workspaces/task-1",
+                "task-1"
             )
             .is_ok()
         );
-        assert!(validate_stored_workspace_path(root, "C:/projects/outside/task-1").is_err());
+        assert!(
+            validate_stored_workspace_path(root, "C:/projects/outside/task-1", "task-1").is_err()
+        );
     }
 }
