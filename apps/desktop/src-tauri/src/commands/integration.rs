@@ -3,6 +3,7 @@ use std::process::Command;
 use tauri::State;
 
 use crate::command_error::CommandError;
+use crate::commands::fix_tasks::validate_stored_workspace_path;
 use crate::persistence::{FixTaskIntegration, FixTaskOrchestration, PersistenceState};
 
 #[derive(Debug, serde::Deserialize)]
@@ -76,12 +77,12 @@ pub fn integrate_fix_task_commits(
         .workspace_path
         .clone()
         .ok_or_else(|| invalid("격리 workspace가 없습니다."))?;
-    if !workspace.starts_with(&request.project_path)
-        || task.workspace_state != crate::persistence::FixTaskWorkspaceState::Ready
-    {
+    if task.workspace_state != crate::persistence::FixTaskWorkspaceState::Ready {
         return Err(invalid("유효한 격리 workspace가 아닙니다."));
     }
-    let workspace_path = Path::new(&workspace);
+    let project_root = Path::new(&request.project_path);
+    let workspace_path =
+        validate_stored_workspace_path(project_root, &workspace, &request.task_id)?;
     let status = git(workspace_path, &["status", "--porcelain"])?;
     if !status.status.success() {
         return Err(internal(output_text(&status)));
@@ -122,6 +123,14 @@ pub fn integrate_fix_task_commits(
     }
     if integration.current_index > integration.commits.len() {
         return Err(invalid("저장된 통합 진행 상태가 올바르지 않습니다."));
+    }
+    if integration.current_index > 0 {
+        let expected_head = &integration.commits[integration.current_index - 1];
+        if !current_head.starts_with(expected_head) {
+            return Err(invalid(
+                "저장된 통합 진행 상태와 workspace HEAD가 일치하지 않습니다.",
+            ));
+        }
     }
     integration.state = "applying".into();
     integration.error = None;
