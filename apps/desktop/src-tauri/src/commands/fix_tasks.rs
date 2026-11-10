@@ -75,6 +75,23 @@ pub fn create_fix_patch_plan(
         .load_fix_task(&request.project_path, &request.task_id)
         .map_err(internal)?
         .ok_or_else(|| invalid("Fix task was not found"))?;
+    if task.workspace_state != FixTaskWorkspaceState::Ready {
+        return Err(invalid(
+            "Patch workspace must be ready before creating a plan",
+        ));
+    }
+    let workspace_path = task
+        .workspace_path
+        .as_deref()
+        .ok_or_else(|| invalid("Patch workspace is not ready"))?;
+    let workspace = validate_stored_workspace_path(
+        Path::new(&request.project_path),
+        workspace_path,
+        &request.task_id,
+    )?;
+    if !workspace.is_dir() {
+        return Err(invalid("Patch workspace is not ready"));
+    }
     if request.files.is_empty() || request.files.len() > 64 {
         return Err(invalid("Patch plan must contain 1 to 64 files"));
     }
@@ -82,7 +99,15 @@ pub fn create_fix_patch_plan(
     for path in &request.files {
         validate_patch_path(root, path, &task.target_paths)?;
     }
-    let before = request.files.clone();
+    let before = changed_paths(workspace)?;
+    if before
+        .iter()
+        .any(|path| !request.files.iter().any(|allowed| allowed == path))
+    {
+        return Err(invalid(
+            "Patch workspace already contains changes outside the approved plan",
+        ));
+    }
     persistence
         .database()?
         .save_fix_patch_plan(
@@ -133,6 +158,12 @@ pub fn apply_fix_patch(
     {
         return Err(invalid("Patch contains a file outside the approved plan"));
     }
+    let before = changed_paths(workspace)?;
+    if before != task.before_paths {
+        return Err(invalid(
+            "Patch workspace changed after the plan was created",
+        ));
+    }
     let check = run_git_apply(workspace, &request.patch, true)?;
     if !check.status.success() {
         return Err(invalid(
@@ -146,6 +177,12 @@ pub fn apply_fix_patch(
         ));
     }
     let after = changed_paths(workspace)?;
+    if after
+        .iter()
+        .any(|path| !plan.files.iter().any(|allowed| allowed == path))
+    {
+        return Err(invalid("Patch changed a file outside the approved plan"));
+    }
     persistence
         .database()?
         .save_fix_patch_result(&request.project_path, &request.task_id, &after)
