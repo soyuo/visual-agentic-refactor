@@ -9,6 +9,8 @@ import {
   getOpenAiSubscriptionStatus,
   listReviewSessions,
   listFixTasks,
+  prepareFixTaskWorkspace,
+  removeFixTaskWorkspace,
   loadReviewSession,
   approveReviewTransfer,
   runAiReview,
@@ -77,6 +79,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [sessionError, setSessionError] = createSignal<string | null>(null);
   const [savingDecisionKeys, setSavingDecisionKeys] = createSignal<string[]>([]);
   const [fixTasks, setFixTasks] = createSignal<StoredFixTask[]>([]);
+  const [workspaceTaskId, setWorkspaceTaskId] = createSignal<string | null>(null);
   const [creatingFixTaskId, setCreatingFixTaskId] = createSignal<string | null>(null);
   let previewRequestVersion = 0;
   let sessionRequestVersion = 0;
@@ -470,6 +473,23 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     }
   }
 
+  async function changeFixTaskWorkspace(task: StoredFixTask, action: "prepare" | "remove") {
+    const projectPath = props.project?.path;
+    if (!projectPath || workspaceTaskId() !== null) return;
+    setWorkspaceTaskId(task.taskId);
+    setSessionError(null);
+    try {
+      const updated = action === "prepare"
+        ? await prepareFixTaskWorkspace(projectPath, task.taskId)
+        : await removeFixTaskWorkspace(projectPath, task.taskId);
+      setFixTasks((tasks) => tasks.map((item) => item.taskId === updated.taskId ? updated : item));
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setWorkspaceTaskId(null);
+    }
+  }
+
   return (
     <div class="ai-review-workspace">
       <div class="content-heading">
@@ -743,6 +763,18 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                       <button class="secondary-button" type="button" disabled={Boolean(fixTask) || creatingFixTaskId() !== null} onClick={() => void createFindingFixTask(finding.findingId)}>
                         {creatingFixTaskId() === finding.findingId ? "생성 중…" : fixTask ? "작업 등록됨" : "수정 작업 등록"}
                       </button>
+                      <Show when={fixTask} keyed>
+                        {(task) => <>
+                          <button class="secondary-button" type="button" disabled={workspaceTaskId() !== null || task.workspaceState === "ready"} onClick={() => void changeFixTaskWorkspace(task, "prepare")}>
+                            {workspaceTaskId() === task.taskId ? "준비 중…" : task.workspaceState === "ready" ? "workspace 준비됨" : "workspace 준비"}
+                          </button>
+                          <Show when={task.workspaceState === "ready"}>
+                            <button class="secondary-button" type="button" disabled={workspaceTaskId() !== null} onClick={() => void changeFixTaskWorkspace(task, "remove")}>
+                              {workspaceTaskId() === task.taskId ? "삭제 중…" : "workspace 삭제"}
+                            </button>
+                          </Show>
+                        </>}
+                      </Show>
                     </div>
                   </Show>
                 </article>;
