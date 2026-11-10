@@ -310,6 +310,8 @@ export interface StoredFixTask {
   findingId: string;
   status: FixTaskStatus;
   targetPaths: string[];
+  gitBranch: string | null;
+  baseCommit: string | null;
   errorMessage: string | null;
   createdAtUnixMs: number;
   updatedAtUnixMs: number;

@@ -15,7 +15,7 @@ use crate::review_finding::{
 
 use crate::command_error::{CommandError, CommandErrorCode};
 
-const CURRENT_SCHEMA_VERSION: i64 = 8;
+const CURRENT_SCHEMA_VERSION: i64 = 9;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.sql");
 const REVIEW_MIGRATION: &str = include_str!("../migrations/0003_review_persistence.sql");
@@ -28,6 +28,8 @@ const FIX_TASK_PATCH_PLAN_MIGRATION: &str =
     include_str!("../migrations/0007_fix_task_patch_plan.sql");
 const FIX_TASK_VERIFICATION_MIGRATION: &str =
     include_str!("../migrations/0008_fix_task_verification.sql");
+const FIX_TASK_GIT_WORKTREE_MIGRATION: &str =
+    include_str!("../migrations/0009_fix_task_git_worktree.sql");
 
 static NEXT_REVIEW_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -95,6 +97,8 @@ pub struct StoredFixTask {
     pub status: FixTaskStatus,
     pub target_paths: Vec<String>,
     pub original_git_status: GitStatusResponse,
+    pub git_branch: Option<String>,
+    pub base_commit: Option<String>,
     pub workspace_path: Option<String>,
     pub workspace_state: FixTaskWorkspaceState,
     pub workspace_error: Option<String>,
@@ -244,6 +248,30 @@ impl ProjectDatabase {
         drop(connection);
         self.load_fix_task(root_path, task_id)?
             .ok_or_else(|| "갱신한 수정 작업을 다시 불러오지 못했습니다.".to_owned())
+    }
+
+    pub fn update_fix_task_git_metadata(
+        &self,
+        root_path: &str,
+        task_id: &str,
+        branch: &str,
+        base_commit: &str,
+    ) -> Result<StoredFixTask, String> {
+        let now = current_time_unix_ms()?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        let updated = connection.execute(
+            "UPDATE fix_tasks SET git_branch = ?1, base_commit = ?2, updated_at_unix_ms = ?3 WHERE task_id = ?4 AND project_id = (SELECT id FROM projects WHERE root_path = ?5)",
+            params![branch, base_commit, now, task_id, root_path],
+        ).map_err(|error| format!("failed to save git metadata: {error}"))?;
+        if updated == 0 {
+            return Err("fix task was not found".to_owned());
+        }
+        drop(connection);
+        self.load_fix_task(root_path, task_id)?
+            .ok_or_else(|| "failed to reload fix task".to_owned())
     }
 
     pub fn open(data_dir: PathBuf) -> Result<Self, String> {
@@ -1002,18 +1030,18 @@ impl ProjectDatabase {
             .lock()
             .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
         connection.query_row(
-            "SELECT p.root_path, t.session_id, t.finding_id, t.status, t.target_paths_json, t.original_git_status_json, t.workspace_path, t.workspace_state, t.workspace_error, t.patch_plan_json, t.before_paths_json, t.after_paths_json, t.verification_json, t.error_message, t.created_at_unix_ms, t.updated_at_unix_ms
+            "SELECT p.root_path, t.session_id, t.finding_id, t.status, t.target_paths_json, t.original_git_status_json, t.git_branch, t.base_commit, t.workspace_path, t.workspace_state, t.workspace_error, t.patch_plan_json, t.before_paths_json, t.after_paths_json, t.verification_json, t.error_message, t.created_at_unix_ms, t.updated_at_unix_ms
              FROM fix_tasks t JOIN projects p ON p.id = t.project_id WHERE p.root_path = ?1 AND t.task_id = ?2",
             params![root_path, task_id], |row| {
                 let paths: Vec<String> = serde_json::from_str(&row.get::<_, String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let original_git_status: GitStatusResponse = serde_json::from_str(&row.get::<_, String>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let status = fix_task_status_from_db(&row.get::<_, String>(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                let workspace_state = fix_task_workspace_state_from_db(&row.get::<_, String>(7)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                let patch_plan = row.get::<_, Option<String>>(9)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
-                let before_paths = row.get::<_, Option<String>>(10)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
-                let after_paths = row.get::<_, Option<String>>(11)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
-                let verification = row.get::<_, Option<String>>(12)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
-                Ok(StoredFixTask { task_id: task_id.to_owned(), project_path: row.get(0)?, session_id: row.get(1)?, finding_id: row.get(2)?, status, target_paths: paths, original_git_status, workspace_path: row.get(6)?, workspace_state, workspace_error: row.get(8)?, patch_plan, before_paths, after_paths, verification, error_message: row.get(13)?, created_at_unix_ms: row.get(14)?, updated_at_unix_ms: row.get(15)? })
+                let workspace_state = fix_task_workspace_state_from_db(&row.get::<_, String>(9)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let patch_plan = row.get::<_, Option<String>>(11)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
+                let before_paths = row.get::<_, Option<String>>(12)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
+                let after_paths = row.get::<_, Option<String>>(13)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
+                let verification = row.get::<_, Option<String>>(14)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
+                Ok(StoredFixTask { task_id: task_id.to_owned(), project_path: row.get(0)?, session_id: row.get(1)?, finding_id: row.get(2)?, status, target_paths: paths, original_git_status, git_branch: row.get(6)?, base_commit: row.get(7)?, workspace_path: row.get(8)?, workspace_state, workspace_error: row.get(10)?, patch_plan, before_paths, after_paths, verification, error_message: row.get(15)?, created_at_unix_ms: row.get(16)?, updated_at_unix_ms: row.get(17)? })
             },
         ).optional().map_err(|error| format!("수정 작업을 불러오지 못했습니다: {error}"))
     }
@@ -1126,6 +1154,7 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
             6 => transaction.execute_batch(FIX_TASK_WORKSPACE_MIGRATION)?,
             7 => transaction.execute_batch(FIX_TASK_PATCH_PLAN_MIGRATION)?,
             8 => transaction.execute_batch(FIX_TASK_VERIFICATION_MIGRATION)?,
+            9 => transaction.execute_batch(FIX_TASK_GIT_WORKTREE_MIGRATION)?,
             _ => return Err(rusqlite::Error::InvalidQuery),
         }
         transaction.pragma_update(None, "user_version", next_version)?;

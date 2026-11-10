@@ -422,11 +422,36 @@ pub fn prepare_fix_task_workspace(
     }
     fs::create_dir_all(workspace_root.parent().expect("workspace has a parent"))
         .map_err(|error| internal(format!("workspace 디렉터리를 만들지 못했습니다: {error}")))?;
-    let result = Command::new("git")
+    let base_commit = Command::new("git")
         .current_dir(root)
-        .args(["worktree", "add", "--detach"])
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|error| internal(error.to_string()))?;
+    if !base_commit.status.success() {
+        return Err(internal("기준 커밋을 확인하지 못했습니다.".to_owned()));
+    }
+    let base_commit = String::from_utf8_lossy(&base_commit.stdout)
+        .trim()
+        .to_owned();
+    let branch = task
+        .git_branch
+        .clone()
+        .unwrap_or_else(|| format!("fix/{}", request.task_id));
+    if !branch.starts_with("fix/") || branch.len() > 128 || branch.contains("..") {
+        return Err(invalid("안전하지 않은 수정 브랜치 이름입니다."));
+    }
+    let mut add = Command::new("git");
+    add.current_dir(root).args(["worktree", "add"]);
+    if task.git_branch.is_none() {
+        add.args(["-b", &branch]);
+    }
+    let result = add
         .arg(&workspace_root)
-        .arg("HEAD")
+        .arg(if task.git_branch.is_some() {
+            branch.as_str()
+        } else {
+            base_commit.as_str()
+        })
         .output()
         .map_err(|error| internal(error.to_string()))?;
     if !result.status.success() {
@@ -444,6 +469,15 @@ pub fn prepare_fix_task_workspace(
             message
         }));
     }
+    persistence
+        .database()?
+        .update_fix_task_git_metadata(
+            &request.project_path,
+            &request.task_id,
+            &branch,
+            &base_commit,
+        )
+        .map_err(internal)?;
     persistence
         .database()?
         .update_fix_task_workspace(
