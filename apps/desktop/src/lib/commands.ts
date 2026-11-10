@@ -669,6 +669,25 @@ export async function updateFixTask(
   } catch (error) { throw toAppCommandError(error); }
 }
 
+export interface IntegrateFixTaskRequest {
+  projectPath: string;
+  taskId: string;
+  commits: string[];
+  expectedBaseCommit: string;
+  approve: boolean;
+}
+
+export interface IntegrateFixTaskResponse {
+  taskId: string;
+  appliedCommits: string[];
+  currentIndex: number;
+  state: string;
+}
+
+export async function integrateFixTaskCommits(request: IntegrateFixTaskRequest): Promise<IntegrateFixTaskResponse> {
+  return invoke<IntegrateFixTaskResponse>('integrate_fix_task_commits', { request });
+}
+
 export async function updateFixTaskOrchestration(
   projectPath: string,
   taskId: string,
