@@ -73,6 +73,19 @@ pub fn integrate_fix_task_commits(
         .load_fix_task(&request.project_path, &request.task_id)
         .map_err(internal)?
         .ok_or_else(|| invalid("수정 작업을 찾을 수 없습니다."))?;
+    if task
+        .readiness
+        .as_ref()
+        .map(|readiness| readiness.state.as_str())
+        != Some("approved")
+    {
+        return Err(invalid("승인된 커밋 준비 상태가 없어 통합할 수 없습니다."));
+    }
+    if task.base_commit.as_deref() != Some(request.expected_base_commit.as_str()) {
+        return Err(invalid(
+            "작업의 기준 SHA와 요청 기준 SHA가 일치하지 않습니다.",
+        ));
+    }
     let workspace = task
         .workspace_path
         .clone()
