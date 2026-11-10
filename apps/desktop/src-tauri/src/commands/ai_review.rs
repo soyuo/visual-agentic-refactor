@@ -109,7 +109,14 @@ pub async fn run_ai_review(
 
     let provider: Box<dyn AiProvider> = match request.provider {
         CredentialProvider::OpenAi => {
-            Box::new(OpenAiProvider::from_keyring().map_err(provider_error)?)
+            if crate::credentials::openai_subscription_status()
+                .map_err(|_| internal("OpenAI 구독 인증 상태를 읽지 못했습니다.".to_owned()))?
+                .inference_enabled
+            {
+                Box::new(OpenAiProvider::from_subscription().map_err(provider_error)?)
+            } else {
+                Box::new(OpenAiProvider::from_keyring().map_err(provider_error)?)
+            }
         }
         CredentialProvider::Anthropic => {
             Box::new(AnthropicProvider::from_keyring().map_err(provider_error)?)
