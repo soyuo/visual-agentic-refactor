@@ -5,7 +5,10 @@ use std::process::Command;
 use tauri::State;
 
 use crate::command_error::{CommandError, CommandErrorCode};
-use crate::persistence::{FixTaskStatus, FixTaskWorkspaceState, PersistenceState, StoredFixTask};
+use crate::persistence::{
+    FixTaskOrchestration, FixTaskOrchestrationState, FixTaskStatus, FixTaskWorkspaceState,
+    PersistenceState, StoredFixTask,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +77,17 @@ pub struct FixPatchDiffResponse {
 pub struct GetFixPatchDiffRequest {
     pub project_path: String,
     pub task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFixTaskOrchestrationRequest {
+    pub project_path: String,
+    pub task_id: String,
+    pub state: FixTaskOrchestrationState,
+    pub retry_count: u32,
+    pub retry_reason: Option<String>,
+    pub failure_log: Option<String>,
 }
 
 #[tauri::command]
@@ -607,6 +621,79 @@ pub fn update_fix_task(
             request.error_message.as_deref(),
         )
         .map_err(internal)
+}
+
+#[tauri::command]
+pub fn update_fix_task_orchestration(
+    request: UpdateFixTaskOrchestrationRequest,
+    persistence: State<'_, PersistenceState>,
+) -> Result<StoredFixTask, CommandError> {
+    validate(&request.project_path, &request.task_id, "orchestration")?;
+    if request.retry_count > 2 {
+        return Err(invalid("재시도 횟수는 2회를 넘을 수 없습니다"));
+    }
+    if request
+        .retry_reason
+        .as_deref()
+        .is_some_and(|reason| reason.len() > 256)
+    {
+        return Err(invalid("재시도 사유는 256바이트를 넘을 수 없습니다"));
+    }
+    if request
+        .failure_log
+        .as_deref()
+        .is_some_and(|log| log.len() > 32 * 1024)
+    {
+        return Err(invalid("실패 로그는 32KiB를 넘을 수 없습니다"));
+    }
+    let current = persistence
+        .database()?
+        .load_fix_task(&request.project_path, &request.task_id)
+        .map_err(internal)?
+        .ok_or_else(|| invalid("수정 작업을 찾지 못했습니다"))?;
+    if !valid_orchestration_transition(&current.orchestration.state, &request.state) {
+        return Err(invalid("허용되지 않은 패치 orchestration 상태 전이입니다"));
+    }
+    persistence
+        .database()?
+        .update_fix_task_orchestration(
+            &request.project_path,
+            &request.task_id,
+            &FixTaskOrchestration {
+                state: request.state,
+                retry_count: request.retry_count,
+                max_retries: 2,
+                retry_reason: request.retry_reason,
+                failure_log: request.failure_log,
+            },
+        )
+        .map_err(internal)
+}
+
+fn valid_orchestration_transition(
+    current: &FixTaskOrchestrationState,
+    next: &FixTaskOrchestrationState,
+) -> bool {
+    use FixTaskOrchestrationState::*;
+    matches!(
+        (current, next),
+        (Idle, Applying | Cancelled)
+            | (
+                Applying,
+                Applying | Verifying | RetryScheduled | Failed | Cancelled | Completed
+            )
+            | (
+                Verifying,
+                Verifying | RetryScheduled | Failed | Cancelled | Completed
+            )
+            | (
+                RetryScheduled,
+                Applying | RetryScheduled | Failed | Cancelled
+            )
+            | (Failed, Applying | Failed | Cancelled)
+            | (Cancelled, Applying | Cancelled)
+            | (Completed, Completed)
+    )
 }
 
 fn validate(project_path: &str, first: &str, second: &str) -> Result<(), CommandError> {
