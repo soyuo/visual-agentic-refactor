@@ -2,14 +2,17 @@ import { createEffect, createSignal, onMount, Show } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import {
   cancelTask,
+  disconnectOpenAiSubscription,
   deleteProviderCredential,
   listProviderCredentials,
+  getOpenAiSubscriptionStatus,
   listReviewSessions,
   loadReviewSession,
   approveReviewTransfer,
   runAiReview,
   setFindingDecision as persistFindingDecision,
   saveProviderCredential,
+  signInOpenAiSubscription,
   previewReviewContext,
   toAppCommandError,
   type CredentialProvider,
@@ -17,6 +20,7 @@ import {
   type GraphSnapshot,
   type ProviderCredentialStatus,
   type OpenProjectResponse,
+  type OpenAiSubscriptionStatus,
   type ReviewContextPreview,
   type ReviewContextScope,
   type ReviewFindingSelection,
@@ -48,6 +52,8 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [busyProvider, setBusyProvider] = createSignal<CredentialProvider | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [notice, setNotice] = createSignal<string | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] = createSignal<OpenAiSubscriptionStatus | null>(null);
+  const [subscriptionBusy, setSubscriptionBusy] = createSignal(false);
   const [consentDialogOpen, setConsentDialogOpen] = createSignal(false);
   const [consentDecision, setConsentDecision] = createSignal<"approved" | "rejected" | "cancelled" | null>(null);
   const [consentScopeKey, setConsentScopeKey] = createSignal("");
@@ -133,7 +139,10 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     }
   });
 
-  onMount(() => void refreshStatuses());
+  onMount(() => {
+    void refreshStatuses();
+    void refreshSubscriptionStatus();
+  });
 
   createEffect(() => {
     const path = props.project?.path ?? "";
@@ -171,6 +180,41 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
       setError(toAppCommandError(cause).message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function refreshSubscriptionStatus() {
+    try {
+      setSubscriptionStatus(await getOpenAiSubscriptionStatus());
+    } catch (error) {
+      setError(toAppCommandError(error).message);
+    }
+  }
+
+  async function connectOpenAiSubscription() {
+    setSubscriptionBusy(true);
+    setError(null);
+    try {
+      setSubscriptionStatus(await signInOpenAiSubscription());
+      setNotice("OpenAI ChatGPT 구독 로그인이 완료되었습니다.");
+    } catch (error) {
+      setError(toAppCommandError(error).message);
+    } finally {
+      setSubscriptionBusy(false);
+    }
+  }
+
+  async function disconnectOpenAiSubscriptionAccount() {
+    setSubscriptionBusy(true);
+    setError(null);
+    try {
+      await disconnectOpenAiSubscription();
+      await refreshSubscriptionStatus();
+      setNotice("OpenAI ChatGPT 구독 연결을 해제했습니다.");
+    } catch (error) {
+      setError(toAppCommandError(error).message);
+    } finally {
+      setSubscriptionBusy(false);
     }
   }
 
@@ -438,6 +482,26 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                 </Show>
               </div>
             ))}
+          </Show>
+        </div>
+
+        <div class="credential-provider-row subscription-auth-row">
+          <div>
+            <strong>OpenAI ChatGPT 구독</strong>
+            <span classList={{ "credential-configured": subscriptionStatus()?.connected }}>
+              {subscriptionStatus()?.connected
+                ? `연결됨${subscriptionStatus()?.accountEmail ? ` · ${subscriptionStatus()?.accountEmail}` : ""}`
+                : "API 키와 별도의 공식 브라우저 로그인"}
+            </span>
+          </div>
+          <Show when={subscriptionStatus()?.connected} fallback={
+            <button class="secondary-button" type="button" disabled={subscriptionBusy()} onClick={() => void connectOpenAiSubscription()}>
+              {subscriptionBusy() ? "브라우저 로그인 중…" : "브라우저로 연결"}
+            </button>
+          }>
+            <button class="text-button danger-text" type="button" disabled={subscriptionBusy()} onClick={() => void disconnectOpenAiSubscriptionAccount()}>
+              연결 해제
+            </button>
           </Show>
         </div>
 

@@ -31,6 +31,12 @@ export interface ProviderCredentialStatus {
   configured: boolean;
 }
 
+export interface OpenAiSubscriptionStatus {
+  connected: boolean;
+  inferenceEnabled: boolean;
+  accountEmail: string | null;
+}
+
 export interface OpenProjectResponse {
   path: string;
   name: string;
@@ -692,4 +698,24 @@ export async function deleteProviderCredential(provider: CredentialProvider): Pr
   } catch (error) {
     throw toAppCommandError(error);
   }
+}
+
+export async function getOpenAiSubscriptionStatus(): Promise<OpenAiSubscriptionStatus> {
+  try { return await invoke<OpenAiSubscriptionStatus>("get_openai_subscription_status"); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
+export async function signInOpenAiSubscription(): Promise<OpenAiSubscriptionStatus> {
+  try { return await invoke<OpenAiSubscriptionStatus>("sign_in_openai_subscription"); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
+export async function cancelOpenAiSubscriptionSignIn(): Promise<void> {
+  try { await invoke("cancel_openai_subscription_sign_in"); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
+export async function disconnectOpenAiSubscription(): Promise<void> {
+  try { await invoke("disconnect_openai_subscription"); }
+  catch (error) { throw toAppCommandError(error); }
 }
