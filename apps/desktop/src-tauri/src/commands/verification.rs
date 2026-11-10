@@ -5,8 +5,10 @@ use crate::persistence::{
     PersistenceState, StoredFixTask,
 };
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 use tauri::State;
 
@@ -116,15 +118,18 @@ pub fn run_fix_verification(
         }
         let result = match command.spawn() {
             Ok(mut child) => {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+                let output_limit = policy.output_limit_bytes;
+                let stdout_reader = thread::spawn(move || read_limited(stdout, output_limit));
+                let stderr_reader = thread::spawn(move || read_limited(stderr, output_limit));
                 let deadline = Instant::now() + Duration::from_millis(policy.timeout_ms);
                 loop {
                     if let Some(status) = child.try_wait().map_err(|e| internal(e.to_string()))? {
-                        let out = child
-                            .wait_with_output()
-                            .map_err(|e| internal(e.to_string()))?;
-                        let mut text = String::from_utf8_lossy(&out.stdout).to_string();
-                        text.push_str(&String::from_utf8_lossy(&out.stderr));
-                        text.truncate(policy.output_limit_bytes);
+                        let _ = child.wait().map_err(|e| internal(e.to_string()))?;
+                        let mut text = join_output(stdout_reader, output_limit)?;
+                        text.push_str(&join_output(stderr_reader, output_limit)?);
+                        text.truncate(output_limit);
                         break FixVerificationResult {
                             id: candidate.id.clone(),
                             command: candidate.command.clone(),
@@ -144,13 +149,16 @@ pub fn run_fix_verification(
                     if Instant::now() >= deadline {
                         let _ = child.kill();
                         let _ = child.wait();
+                        let mut text = join_output(stdout_reader, output_limit)?;
+                        text.push_str(&join_output(stderr_reader, output_limit)?);
+                        text.truncate(output_limit);
                         break FixVerificationResult {
                             id: candidate.id.clone(),
                             command: candidate.command.clone(),
                             args: candidate.args.clone(),
                             status: "cancelled".into(),
                             exit_code: None,
-                            output_summary: String::new(),
+                            output_summary: text,
                             error: Some("시간 제한을 초과했습니다.".into()),
                             started_at_unix_ms: started,
                             ended_at_unix_ms: now(),
@@ -181,6 +189,26 @@ pub fn run_fix_verification(
             &FixVerificationRecord { policy, results },
         )
         .map_err(internal)
+}
+fn read_limited<T>(stream: Option<T>, limit: usize) -> Vec<u8>
+where
+    T: Read,
+{
+    let Some(mut stream) = stream else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    let _ = stream
+        .take((limit.saturating_add(1)) as u64)
+        .read_to_end(&mut bytes);
+    bytes
+}
+
+fn join_output(reader: thread::JoinHandle<Vec<u8>>, limit: usize) -> Result<String, CommandError> {
+    reader
+        .join()
+        .map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(limit)]).into_owned())
+        .map_err(|_| internal("검증 출력 수집 작업이 중단되었습니다."))
 }
 
 fn load_ready(
