@@ -148,6 +148,18 @@ the phase deliverables and acceptance criteria:
   existing titles; never create duplicates. Milestone progress is derived from
   its issues, so keep issue assignment and closure accurate.
 
+## Issue #39 OpenAI SIWC OAuth
+
+- Issue #39 uses official OpenAI SIWC browser authentication only. The OAuth
+  protocol request must retain the required permission values `openid`,
+  `offline_access`, and `chatgpt.tokens.use.direct` (alongside the other
+  protocol values defined by the implementation). These are authentication
+  protocol permissions, not product review-selection scope kinds.
+- `chatgpt.tokens.use.direct` is required before subscription inference is
+  enabled. Never replace these permissions with private APIs, cookies, or
+  internal session tokens, and never transmit review context without the
+  existing explicit preview consent.
+
 ## Working checklist
 
 1. Read the relevant specification section and inspect nearby code before

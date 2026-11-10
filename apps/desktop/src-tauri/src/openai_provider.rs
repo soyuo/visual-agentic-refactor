@@ -9,6 +9,7 @@ use crate::ai_provider::{
 };
 use crate::credentials::{self, CredentialProvider};
 use crate::state::TaskControl;
+use crate::subscription_auth;
 
 const RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -92,6 +93,7 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
 pub struct OpenAiProvider<T = ReqwestOpenAiTransport> {
     api_key: String,
     transport: T,
+    stream: bool,
 }
 
 impl OpenAiProvider<ReqwestOpenAiTransport> {
@@ -113,13 +115,26 @@ impl OpenAiProvider<ReqwestOpenAiTransport> {
         Ok(Self {
             api_key,
             transport: ReqwestOpenAiTransport::new()?,
+            stream: false,
+        })
+    }
+
+    pub fn from_subscription() -> Result<Self, ProviderError> {
+        Ok(Self {
+            api_key: String::new(),
+            transport: ReqwestOpenAiTransport::new()?,
+            stream: true,
         })
     }
 }
 
 impl<T> OpenAiProvider<T> {
     pub fn with_transport(api_key: String, transport: T) -> Self {
-        Self { api_key, transport }
+        Self {
+            api_key,
+            transport,
+            stream: false,
+        }
     }
 }
 
@@ -145,14 +160,23 @@ impl<T: OpenAiTransport> AiProvider for OpenAiProvider<T> {
     ) -> Result<ProviderResponse, ProviderError> {
         let descriptor = self.descriptor();
         validate_request(request, &descriptor)?;
-        if self.api_key.trim().is_empty() {
+        let api_key = if self.stream {
+            subscription_auth::access_token_for_inference()
+                .await
+                .map_err(|error| {
+                    ProviderError::new(ProviderErrorCode::Authentication, error.message)
+                })?
+        } else {
+            self.api_key.clone()
+        };
+        if !self.stream && api_key.trim().is_empty() {
             return Err(ProviderError::new(
                 ProviderErrorCode::Authentication,
                 "OpenAI API 키를 먼저 설정해 주세요.",
             ));
         }
 
-        let body = build_request(request);
+        let body = build_request(request, self.stream);
         let mut attempts = 0;
         loop {
             ensure_not_cancelled(task)?;
@@ -161,7 +185,7 @@ impl<T: OpenAiTransport> AiProvider for OpenAiProvider<T> {
             let response = tokio::select! {
                 biased;
                 _ = wait_for_cancellation(task) => return Err(ProviderError::cancelled()),
-                result = self.transport.post(&self.api_key, &body) => result,
+                result = self.transport.post(&api_key, &body) => result,
             };
             let result = match response {
                 Ok(response) => parse_http_response(response, &request.model),
@@ -197,11 +221,12 @@ async fn wait_for_cancellation(task: &TaskControl) {
     }
 }
 
-fn build_request(request: &ReviewRequest) -> Value {
+fn build_request(request: &ReviewRequest, stream: bool) -> Value {
     let mut body = json!({
         "model": request.model,
         "instructions": "Review only the supplied code and evidence. Do not invent findings or source locations. Return only the requested JSON structure.",
         "input": request.context,
+        "store": false,
         "text": {
             "format": {
                 "type": "json_schema",
@@ -211,6 +236,9 @@ fn build_request(request: &ReviewRequest) -> Value {
             }
         }
     });
+    if stream {
+        body["stream"] = json!(true);
+    }
     if let Some(max_output_tokens) = request.max_output_tokens {
         body["max_output_tokens"] = json!(max_output_tokens);
     }
@@ -274,12 +302,32 @@ fn parse_http_response(
         ));
     }
 
-    let body: Value = serde_json::from_str(&response.body).map_err(|_| {
-        ProviderError::new(
-            ProviderErrorCode::InvalidResponse,
-            "OpenAI가 올바른 JSON 응답을 반환하지 않았습니다.",
-        )
-    })?;
+    let body: Value = if response.body.lines().any(|line| line.starts_with("data:")) {
+        response
+            .body
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim))
+            .filter(|line| *line != "[DONE]")
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find_map(|event| {
+                (event.get("type").and_then(Value::as_str) == Some("response.completed"))
+                    .then(|| event.get("response").cloned())
+                    .flatten()
+            })
+            .ok_or_else(|| {
+                ProviderError::new(
+                    ProviderErrorCode::InvalidResponse,
+                    "OpenAI 스트리밍 응답이 완료되지 않았습니다.",
+                )
+            })?
+    } else {
+        serde_json::from_str(&response.body).map_err(|_| {
+            ProviderError::new(
+                ProviderErrorCode::InvalidResponse,
+                "OpenAI가 올바른 JSON 응답을 반환하지 않았습니다.",
+            )
+        })?
+    };
 
     if body.get("status").and_then(Value::as_str) != Some("completed") {
         return Err(ProviderError::new(
