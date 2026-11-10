@@ -324,6 +324,19 @@ export interface StoredFixTask {
   afterPaths: string[];
   orchestration: { state: FixTaskOrchestrationState; retryCount: number; maxRetries: number; retryReason: string | null; failureLog: string | null };
   verification: { policy: FixVerificationPolicy; results: VerificationResult[] } | null;
+  readiness: { state: "blocked" | "ready" | "approved"; findingId: string; changedFiles: string[]; verification: StoredFixTask["verification"]; baseCommit: string | null; approverAction: string | null; approvedAtUnixMs: number | null; evaluatedAtUnixMs: number; reason: string | null } | null;
+}
+
+export interface FixReadinessRequest {
+  projectPath: string;
+  taskId: string;
+  expectedBaseCommit?: string | null;
+  changedFiles?: string[];
+  approve: boolean;
+}
+
+export async function evaluateFixCommitReadiness(request: FixReadinessRequest): Promise<StoredFixTask> {
+  return invoke<StoredFixTask>("evaluate_fix_commit_readiness", { request });
 }
 
 export interface AiReviewResponse {

@@ -7,6 +7,7 @@ pub mod fix_tasks;
 pub mod git;
 pub mod graph;
 pub mod project;
+pub mod readiness;
 pub mod review_persistence;
 pub mod scanner;
 pub mod spring;

@@ -57,6 +57,7 @@ pub fn run() {
             commands::fix_tasks::get_fix_patch_diff,
             commands::verification::list_fix_verification_candidates,
             commands::verification::run_fix_verification,
+            commands::readiness::evaluate_fix_commit_readiness,
             commands::context::preview_review_context,
             commands::review_persistence::save_review_session,
             commands::review_persistence::list_review_sessions,

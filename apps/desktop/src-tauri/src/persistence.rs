@@ -15,7 +15,7 @@ use crate::review_finding::{
 
 use crate::command_error::{CommandError, CommandErrorCode};
 
-const CURRENT_SCHEMA_VERSION: i64 = 9;
+const CURRENT_SCHEMA_VERSION: i64 = 10;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.sql");
 const REVIEW_MIGRATION: &str = include_str!("../migrations/0003_review_persistence.sql");
@@ -32,6 +32,8 @@ const FIX_TASK_VERIFICATION_MIGRATION: &str =
     include_str!("../migrations/0008_fix_task_verification.sql");
 const FIX_TASK_GIT_WORKTREE_MIGRATION: &str =
     include_str!("../migrations/0009_fix_task_git_worktree.sql");
+const FIX_TASK_READINESS_MIGRATION: &str =
+    include_str!("../migrations/0010_fix_task_readiness.sql");
 
 static NEXT_REVIEW_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -131,9 +133,24 @@ pub struct StoredFixTask {
     pub after_paths: Vec<String>,
     pub orchestration: FixTaskOrchestration,
     pub verification: Option<FixVerificationRecord>,
+    pub readiness: Option<FixCommitReadiness>,
     pub error_message: Option<String>,
     pub created_at_unix_ms: i64,
     pub updated_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FixCommitReadiness {
+    pub state: String,
+    pub finding_id: String,
+    pub changed_files: Vec<String>,
+    pub verification: Option<FixVerificationRecord>,
+    pub base_commit: Option<String>,
+    pub approver_action: Option<String>,
+    pub approved_at_unix_ms: Option<i64>,
+    pub evaluated_at_unix_ms: i64,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1056,7 +1073,7 @@ impl ProjectDatabase {
             .lock()
             .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
         connection.query_row(
-            "SELECT p.root_path, t.session_id, t.finding_id, t.status, t.target_paths_json, t.original_git_status_json, t.git_branch, t.base_commit, t.workspace_path, t.workspace_state, t.workspace_error, t.patch_plan_json, t.before_paths_json, t.after_paths_json, t.orchestration_json, t.verification_json, t.error_message, t.created_at_unix_ms, t.updated_at_unix_ms
+            "SELECT p.root_path, t.session_id, t.finding_id, t.status, t.target_paths_json, t.original_git_status_json, t.git_branch, t.base_commit, t.workspace_path, t.workspace_state, t.workspace_error, t.patch_plan_json, t.before_paths_json, t.after_paths_json, t.orchestration_json, t.verification_json, t.readiness_json, t.error_message, t.created_at_unix_ms, t.updated_at_unix_ms
              FROM fix_tasks t JOIN projects p ON p.id = t.project_id WHERE p.root_path = ?1 AND t.task_id = ?2",
             params![root_path, task_id], |row| {
                 let paths: Vec<String> = serde_json::from_str(&row.get::<_, String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
@@ -1068,7 +1085,8 @@ impl ProjectDatabase {
                 let after_paths = row.get::<_, Option<String>>(13)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
                 let orchestration = row.get::<_, Option<String>>(14)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or(FixTaskOrchestration { state: FixTaskOrchestrationState::Idle, retry_count: 0, max_retries: 2, retry_reason: None, failure_log: None });
                 let verification = row.get::<_, Option<String>>(15)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
-                Ok(StoredFixTask { task_id: task_id.to_owned(), project_path: row.get(0)?, session_id: row.get(1)?, finding_id: row.get(2)?, status, target_paths: paths, original_git_status, git_branch: row.get(6)?, base_commit: row.get(7)?, workspace_path: row.get(8)?, workspace_state, workspace_error: row.get(10)?, patch_plan, before_paths, after_paths, orchestration, verification, error_message: row.get(16)?, created_at_unix_ms: row.get(17)?, updated_at_unix_ms: row.get(18)? })
+                let readiness = row.get::<_, Option<String>>(16)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
+                Ok(StoredFixTask { task_id: task_id.to_owned(), project_path: row.get(0)?, session_id: row.get(1)?, finding_id: row.get(2)?, status, target_paths: paths, original_git_status, git_branch: row.get(6)?, base_commit: row.get(7)?, workspace_path: row.get(8)?, workspace_state, workspace_error: row.get(10)?, patch_plan, before_paths, after_paths, orchestration, verification, readiness, error_message: row.get(17)?, created_at_unix_ms: row.get(18)?, updated_at_unix_ms: row.get(19)? })
             },
         ).optional().map_err(|error| format!("수정 작업을 불러오지 못했습니다: {error}"))
     }
@@ -1187,6 +1205,28 @@ impl ProjectDatabase {
         self.load_fix_task(root_path, task_id)?
             .ok_or_else(|| "갱신한 수정 작업을 다시 불러오지 못했습니다.".to_owned())
     }
+
+    pub fn save_fix_readiness(
+        &self,
+        root_path: &str,
+        task_id: &str,
+        readiness: &FixCommitReadiness,
+    ) -> Result<StoredFixTask, String> {
+        let json = serde_json::to_string(readiness).map_err(|error| {
+            format!("commit readiness를 저장 형식으로 바꾸지 못했습니다: {error}")
+        })?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let updated = connection.execute("UPDATE fix_tasks SET readiness_json = ?1, updated_at_unix_ms = ?2 WHERE task_id = ?3 AND project_id = (SELECT id FROM projects WHERE root_path = ?4)", params![json, current_time_unix_ms()?, task_id, root_path]).map_err(|error| format!("commit readiness를 저장하지 못했습니다: {error}"))?;
+        if updated == 0 {
+            return Err("수정 작업을 찾을 수 없습니다.".to_owned());
+        }
+        drop(connection);
+        self.load_fix_task(root_path, task_id)?
+            .ok_or_else(|| "저장한 readiness를 다시 불러오지 못했습니다.".to_owned())
+    }
 }
 
 fn migrate(connection: &Connection) -> rusqlite::Result<()> {
@@ -1212,6 +1252,7 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
                 transaction.execute_batch(FIX_TASK_VERIFICATION_MIGRATION)?;
             }
             9 => transaction.execute_batch(FIX_TASK_GIT_WORKTREE_MIGRATION)?,
+            10 => transaction.execute_batch(FIX_TASK_READINESS_MIGRATION)?,
             _ => return Err(rusqlite::Error::InvalidQuery),
         }
         transaction.pragma_update(None, "user_version", next_version)?;
