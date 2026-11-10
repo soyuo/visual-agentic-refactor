@@ -319,6 +319,7 @@ export interface StoredFixTask {
   patchPlan: { intent: string; files: string[] } | null;
   beforePaths: string[];
   afterPaths: string[];
+  verification: { policy: FixVerificationPolicy; results: VerificationResult[] } | null;
 }
 
 export interface AiReviewResponse {
