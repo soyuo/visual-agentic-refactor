@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import {
   cancelTask,
   createFixTask,
+  createFixPatchPlan,
+  applyFixPatch,
   disconnectOpenAiSubscription,
   deleteProviderCredential,
   listProviderCredentials,
@@ -81,6 +83,8 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [fixTasks, setFixTasks] = createSignal<StoredFixTask[]>([]);
   const [workspaceTaskId, setWorkspaceTaskId] = createSignal<string | null>(null);
   const [creatingFixTaskId, setCreatingFixTaskId] = createSignal<string | null>(null);
+  const [patchTaskId, setPatchTaskId] = createSignal<string | null>(null);
+  const [patchDrafts, setPatchDrafts] = createSignal<Record<string, string>>({});
   let previewRequestVersion = 0;
   let sessionRequestVersion = 0;
   let consentDialog: HTMLElement | undefined;
@@ -490,6 +494,37 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     }
   }
 
+  async function createPatchPlan(task: StoredFixTask, relativePath: string | undefined, intent: string) {
+    const projectPath = props.project?.path;
+    if (!projectPath || patchTaskId() !== null || !relativePath) return;
+    setPatchTaskId(task.taskId);
+    setSessionError(null);
+    try {
+      const updated = await createFixPatchPlan(projectPath, task.taskId, intent, [relativePath]);
+      setFixTasks((tasks) => tasks.map((item) => item.taskId === updated.taskId ? updated : item));
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setPatchTaskId(null);
+    }
+  }
+
+  async function applyPatch(task: StoredFixTask) {
+    const projectPath = props.project?.path;
+    const patch = patchDrafts()[task.taskId]?.trim();
+    if (!projectPath || !patch || patchTaskId() !== null || task.workspaceState !== "ready") return;
+    setPatchTaskId(task.taskId);
+    setSessionError(null);
+    try {
+      const updated = await applyFixPatch(projectPath, task.taskId, patch);
+      setFixTasks((tasks) => tasks.map((item) => item.taskId === updated.taskId ? updated : item));
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setPatchTaskId(null);
+    }
+  }
+
   return (
     <div class="ai-review-workspace">
       <div class="content-heading">
@@ -773,6 +808,20 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                               {workspaceTaskId() === task.taskId ? "삭제 중…" : "workspace 삭제"}
                             </button>
                           </Show>
+                          <div class="finding-patch-controls">
+                            <Show when={task.patchPlan} keyed fallback={<button class="secondary-button" type="button" disabled={patchTaskId() !== null} onClick={() => void createPatchPlan(task, result.evidence[0]?.relativePath, result.suggestion ?? result.description)}>
+                              {patchTaskId() === task.taskId ? "계획 저장 중…" : "범위 계획 생성"}
+                            </button>}>
+                              {(plan) => <>
+                                <span role="status">계획: {plan.files.join(", ")}</span>
+                                <textarea class="patch-input" aria-label="적용할 unified diff" placeholder="git diff 형식 패치를 붙여 넣으세요." value={patchDrafts()[task.taskId] ?? ""} onInput={(event) => setPatchDrafts((drafts) => ({ ...drafts, [task.taskId]: event.currentTarget.value }))} />
+                                <button class="secondary-button" type="button" disabled={patchTaskId() !== null || task.workspaceState !== "ready" || !(patchDrafts()[task.taskId]?.trim())} onClick={() => void applyPatch(task)}>
+                                  {patchTaskId() === task.taskId ? "적용 중…" : "격리 workspace에 적용"}
+                                </button>
+                                <Show when={task.afterPaths.length > 0}><span role="status">변경 기록: {task.afterPaths.join(", ")}</span></Show>
+                              </>}
+                            </Show>
+                          </div>
                         </>}
                       </Show>
                     </div>
