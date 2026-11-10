@@ -226,6 +226,11 @@ fn load_ready(
     if task.workspace_state != FixTaskWorkspaceState::Ready || task.workspace_path.is_none() {
         return Err(invalid("격리 workspace가 준비되지 않았습니다."));
     }
+    validate_stored_workspace_path(
+        Path::new(&request.project_path),
+        task.workspace_path.as_deref().unwrap(),
+        &request.task_id,
+    )?;
     Ok(task)
 }
 fn candidate_list(root: &Path) -> Vec<VerificationCandidate> {
