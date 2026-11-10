@@ -30,7 +30,11 @@ tree-sitter = "0.25.10"
 tree-sitter-kotlin-ng = "1.1.0"
 tree-sitter-java = "0.23.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["macros", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "time", "net", "io-util", "sync"] }
+base64 = "0.22"
+rand = "0.9"
+sha2 = "0.10"
+jsonwebtoken = { version = "11.1", default-features = false, features = ["rust_crypto"] }
 async-trait = "0.1"
 
 

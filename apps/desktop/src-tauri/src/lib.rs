@@ -17,12 +17,14 @@ pub mod review_finding;
 pub mod scanner;
 pub mod spring;
 pub mod state;
+pub mod subscription_auth;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(state::AppState::default())
         .manage(commands::context::ReviewContextPreviewState::default())
+        .manage(subscription_auth::SubscriptionLoginControl::default())
         .setup(|app| {
             use tauri::Manager;
 
@@ -39,6 +41,10 @@ pub fn run() {
             commands::credentials::list_provider_credentials,
             commands::credentials::save_provider_credential,
             commands::credentials::delete_provider_credential,
+            subscription_auth::sign_in_openai_subscription,
+            subscription_auth::cancel_openai_subscription_sign_in,
+            subscription_auth::disconnect_openai_subscription,
+            subscription_auth::get_openai_subscription_status,
             commands::findings::validate_review_findings,
             commands::context::preview_review_context,
             commands::review_persistence::save_review_session,

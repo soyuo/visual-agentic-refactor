@@ -1,4 +1,5 @@
 use keyring::{Entry, Error as KeyringError};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6,6 +7,7 @@ use crate::command_error::{CommandError, CommandErrorCode};
 
 const SERVICE_NAME: &str = "visual-agentic-refactor";
 const OPENAI_SUBSCRIPTION_ACCOUNT: &str = "openai-chatgpt-subscription";
+const OPENAI_SUBSCRIPTION_HOST_ACCOUNT: &str = "openai-chatgpt-host-id";
 const CHATGPT_DIRECT_SCOPE: &str = "chatgpt.tokens.use.direct";
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -73,6 +75,7 @@ pub(crate) struct OpenAiSubscriptionCredential {
 pub struct OpenAiSubscriptionStatus {
     pub connected: bool,
     pub inference_enabled: bool,
+    pub account_email: Option<String>,
 }
 
 fn subscription_entry() -> Result<Entry, CommandError> {
@@ -124,6 +127,46 @@ pub(crate) fn delete_openai_subscription() -> Result<(), CommandError> {
     }
 }
 
+pub(crate) fn load_or_create_openai_subscription_host_id() -> Result<String, CommandError> {
+    let entry =
+        Entry::new(SERVICE_NAME, OPENAI_SUBSCRIPTION_HOST_ACCOUNT).map_err(map_store_error)?;
+    match entry.get_password() {
+        Ok(host_id) if host_id.starts_with("urn:uuid:") => Ok(host_id),
+        Ok(_) => Err(CommandError::new(
+            CommandErrorCode::Internal,
+            "저장된 OpenAI 호스트 식별자를 확인할 수 없습니다.",
+        )),
+        Err(KeyringError::NoEntry) => {
+            let mut bytes = [0_u8; 16];
+            rand::rng().fill_bytes(&mut bytes);
+            bytes[6] = (bytes[6] & 0x0f) | 0x40;
+            bytes[8] = (bytes[8] & 0x3f) | 0x80;
+            let host_id = format!(
+                "urn:uuid:{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                bytes[0],
+                bytes[1],
+                bytes[2],
+                bytes[3],
+                bytes[4],
+                bytes[5],
+                bytes[6],
+                bytes[7],
+                bytes[8],
+                bytes[9],
+                bytes[10],
+                bytes[11],
+                bytes[12],
+                bytes[13],
+                bytes[14],
+                bytes[15]
+            );
+            entry.set_password(&host_id).map_err(map_store_error)?;
+            Ok(host_id)
+        }
+        Err(error) => Err(map_store_error(error)),
+    }
+}
+
 pub fn openai_subscription_status() -> Result<OpenAiSubscriptionStatus, CommandError> {
     let credential = read_openai_subscription()?;
     let connected = credential.is_some();
@@ -137,6 +180,7 @@ pub fn openai_subscription_status() -> Result<OpenAiSubscriptionStatus, CommandE
     Ok(OpenAiSubscriptionStatus {
         connected,
         inference_enabled,
+        account_email: credential.and_then(|value| value.email),
     })
 }
 
