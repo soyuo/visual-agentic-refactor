@@ -36,6 +36,13 @@ pub struct PrepareFixTaskWorkspaceRequest {
     pub task_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveFixTaskWorkspaceRequest {
+    pub project_path: String,
+    pub task_id: String,
+}
+
 #[tauri::command]
 pub fn prepare_fix_task_workspace(
     request: PrepareFixTaskWorkspaceRequest,
@@ -79,6 +86,77 @@ pub fn prepare_fix_task_workspace(
             &request.task_id,
             Some(&workspace_root.to_string_lossy()),
             FixTaskWorkspaceState::Ready,
+            None,
+        )
+        .map_err(internal)
+}
+
+#[tauri::command]
+pub fn remove_fix_task_workspace(
+    request: RemoveFixTaskWorkspaceRequest,
+    persistence: State<'_, PersistenceState>,
+) -> Result<StoredFixTask, CommandError> {
+    validate(&request.project_path, &request.task_id, "workspace")?;
+    let task = persistence
+        .database()?
+        .load_fix_task(&request.project_path, &request.task_id)
+        .map_err(internal)?
+        .ok_or_else(|| invalid("Fix task was not found"))?;
+    let Some(workspace_path) = task.workspace_path.as_deref() else {
+        return persistence
+            .database()?
+            .update_fix_task_workspace(
+                &request.project_path,
+                &request.task_id,
+                None,
+                FixTaskWorkspaceState::Removed,
+                None,
+            )
+            .map_err(internal);
+    };
+    let workspace = Path::new(workspace_path);
+    let expected_parent = Path::new(&request.project_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(&request.project_path))
+        .join(".visual-agentic-refactor-workspaces");
+    if workspace.parent() != Some(expected_parent.as_path()) {
+        return Err(invalid(
+            "Stored workspace path is outside the project workspace directory",
+        ));
+    }
+    let result = Command::new("git")
+        .current_dir(&request.project_path)
+        .args(["worktree", "remove", "--force"])
+        .arg(workspace)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !result.status.success() {
+        let message = String::from_utf8_lossy(&result.stderr).trim().to_owned();
+        return persistence
+            .database()?
+            .update_fix_task_workspace(
+                &request.project_path,
+                &request.task_id,
+                Some(workspace_path),
+                FixTaskWorkspaceState::Error,
+                Some(&message),
+            )
+            .map_err(internal)
+            .and_then(|_| {
+                Err(internal(if message.is_empty() {
+                    "격리 workspace를 삭제하지 못했습니다.".to_owned()
+                } else {
+                    message
+                }))
+            });
+    }
+    persistence
+        .database()?
+        .update_fix_task_workspace(
+            &request.project_path,
+            &request.task_id,
+            Some(workspace_path),
+            FixTaskWorkspaceState::Removed,
             None,
         )
         .map_err(internal)
