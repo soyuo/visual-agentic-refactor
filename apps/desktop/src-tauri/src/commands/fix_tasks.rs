@@ -1,8 +1,10 @@
 use serde::Deserialize;
+use std::path::Path;
+use std::process::Command;
 use tauri::State;
 
 use crate::command_error::{CommandError, CommandErrorCode};
-use crate::persistence::{FixTaskStatus, PersistenceState, StoredFixTask};
+use crate::persistence::{FixTaskStatus, FixTaskWorkspaceState, PersistenceState, StoredFixTask};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +27,61 @@ pub struct FixTaskStatusRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ListFixTasksRequest {
     pub project_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareFixTaskWorkspaceRequest {
+    pub project_path: String,
+    pub task_id: String,
+}
+
+#[tauri::command]
+pub fn prepare_fix_task_workspace(
+    request: PrepareFixTaskWorkspaceRequest,
+    persistence: State<'_, PersistenceState>,
+) -> Result<StoredFixTask, CommandError> {
+    validate(&request.project_path, &request.task_id, "workspace")?;
+    let root = Path::new(&request.project_path);
+    if !root.is_dir() {
+        return Err(invalid("Project path must be an existing directory"));
+    }
+    let workspace_root = root.parent().unwrap_or(root).join(format!(
+        ".visual-agentic-refactor-workspaces/{}",
+        request.task_id
+    ));
+    let result = Command::new("git")
+        .current_dir(root)
+        .args(["worktree", "add", "--detach"])
+        .arg(&workspace_root)
+        .arg("HEAD")
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !result.status.success() {
+        let message = String::from_utf8_lossy(&result.stderr).trim().to_owned();
+        let _ = persistence.database()?.update_fix_task_workspace(
+            &request.project_path,
+            &request.task_id,
+            Some(&workspace_root.to_string_lossy()),
+            FixTaskWorkspaceState::Error,
+            Some(&message),
+        );
+        return Err(internal(if message.is_empty() {
+            "격리 workspace를 만들지 못했습니다.".to_owned()
+        } else {
+            message
+        }));
+    }
+    persistence
+        .database()?
+        .update_fix_task_workspace(
+            &request.project_path,
+            &request.task_id,
+            Some(&workspace_root.to_string_lossy()),
+            FixTaskWorkspaceState::Ready,
+            None,
+        )
+        .map_err(internal)
 }
 
 #[tauri::command]

@@ -175,6 +175,33 @@ impl PersistenceState {
 }
 
 impl ProjectDatabase {
+    pub fn update_fix_task_workspace(
+        &self,
+        root_path: &str,
+        task_id: &str,
+        workspace_path: Option<&str>,
+        workspace_state: FixTaskWorkspaceState,
+        workspace_error: Option<&str>,
+    ) -> Result<StoredFixTask, String> {
+        let now = current_time_unix_ms()?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let updated = connection
+            .execute(
+                "UPDATE fix_tasks SET workspace_path = ?1, workspace_state = ?2, workspace_error = ?3, updated_at_unix_ms = ?4 WHERE task_id = ?5 AND project_id = (SELECT id FROM projects WHERE root_path = ?6)",
+                params![workspace_path, fix_task_workspace_state_db(workspace_state), workspace_error, now, task_id, root_path],
+            )
+            .map_err(|error| format!("수정 workspace 상태를 갱신하지 못했습니다: {error}"))?;
+        if updated == 0 {
+            return Err("수정 작업을 찾을 수 없습니다.".to_owned());
+        }
+        drop(connection);
+        self.load_fix_task(root_path, task_id)?
+            .ok_or_else(|| "갱신한 수정 작업을 다시 불러오지 못했습니다.".to_owned())
+    }
+
     pub fn open(data_dir: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&data_dir)
             .map_err(|error| format!("앱 데이터 디렉터리를 준비하지 못했습니다: {error}"))?;
@@ -816,6 +843,15 @@ fn fix_task_status_db(value: FixTaskStatus) -> &'static str {
         FixTaskStatus::Completed => "completed",
         FixTaskStatus::Failed => "failed",
         FixTaskStatus::Cancelled => "cancelled",
+    }
+}
+
+fn fix_task_workspace_state_db(value: FixTaskWorkspaceState) -> &'static str {
+    match value {
+        FixTaskWorkspaceState::NotCreated => "not_created",
+        FixTaskWorkspaceState::Ready => "ready",
+        FixTaskWorkspaceState::Removed => "removed",
+        FixTaskWorkspaceState::Error => "error",
     }
 }
 
