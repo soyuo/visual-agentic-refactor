@@ -36,14 +36,10 @@ pub fn evaluate_fix_commit_readiness(
         .changed_files
         .unwrap_or_else(|| task.after_paths.clone());
     let allowed: HashSet<_> = task.target_paths.iter().cloned().collect();
-    if changed_files
-        .iter()
-        .any(|path| path.trim().is_empty() || !allowed.contains(path))
-    {
+    if !changed_files_are_in_scope(&changed_files, &allowed) {
         return save(
             &request,
             &persistence,
-            &task,
             FixCommitReadiness {
                 state: "blocked".into(),
                 finding_id: task.finding_id.clone(),
@@ -62,7 +58,6 @@ pub fn evaluate_fix_commit_readiness(
             return save(
                 &request,
                 &persistence,
-                &task,
                 FixCommitReadiness {
                     state: "blocked".into(),
                     finding_id: task.finding_id.clone(),
@@ -81,18 +76,13 @@ pub fn evaluate_fix_commit_readiness(
         .verification
         .as_ref()
         .map(|record| {
-            !record.results.is_empty()
-                && record
-                    .results
-                    .iter()
-                    .all(|result| result.status == "passed")
+            all_verifications_passed(record.results.iter().map(|result| result.status.as_str()))
         })
         .unwrap_or(false);
     if !passed {
         return save(
             &request,
             &persistence,
-            &task,
             FixCommitReadiness {
                 state: "blocked".into(),
                 finding_id: task.finding_id.clone(),
@@ -121,13 +111,12 @@ pub fn evaluate_fix_commit_readiness(
         evaluated_at_unix_ms: now(),
         reason: None,
     };
-    save(&request, &persistence, &task, readiness)
+    save(&request, &persistence, readiness)
 }
 
 fn save(
     request: &ReadinessRequest,
     persistence: &State<'_, PersistenceState>,
-    task: &StoredFixTask,
     readiness: FixCommitReadiness,
 ) -> Result<StoredFixTask, CommandError> {
     persistence
@@ -140,4 +129,40 @@ fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default()
+}
+
+fn changed_files_are_in_scope(changed_files: &[String], allowed: &HashSet<String>) -> bool {
+    !changed_files.is_empty()
+        && changed_files
+            .iter()
+            .all(|path| !path.trim().is_empty() && allowed.contains(path))
+}
+
+fn all_verifications_passed<'a>(statuses: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut saw_result = false;
+    let all_passed = statuses.into_iter().all(|status| {
+        saw_result = true;
+        status == "passed"
+    });
+    saw_result && all_passed
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn readiness_requires_at_least_one_changed_file() {
+        let changed_files: Vec<String> = Vec::new();
+        assert!(!super::changed_files_are_in_scope(
+            &changed_files,
+            &std::collections::HashSet::new()
+        ));
+    }
+
+    #[test]
+    fn readiness_only_accepts_all_passed_results() {
+        assert!(super::all_verifications_passed(["passed", "passed"]));
+        assert!(!super::all_verifications_passed(["passed", "failed"]));
+        assert!(!super::all_verifications_passed(["skipped"]));
+        assert!(!super::all_verifications_passed(std::iter::empty()));
+    }
 }
