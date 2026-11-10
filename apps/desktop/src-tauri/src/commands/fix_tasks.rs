@@ -422,17 +422,19 @@ pub fn prepare_fix_task_workspace(
     }
     fs::create_dir_all(workspace_root.parent().expect("workspace has a parent"))
         .map_err(|error| internal(format!("workspace 디렉터리를 만들지 못했습니다: {error}")))?;
-    let base_commit = Command::new("git")
-        .current_dir(root)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map_err(|error| internal(error.to_string()))?;
-    if !base_commit.status.success() {
-        return Err(internal("기준 커밋을 확인하지 못했습니다.".to_owned()));
-    }
-    let base_commit = String::from_utf8_lossy(&base_commit.stdout)
-        .trim()
-        .to_owned();
+    let base_commit = if let Some(base_commit) = task.base_commit.clone() {
+        base_commit
+    } else {
+        let output = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .map_err(|error| internal(error.to_string()))?;
+        if !output.status.success() {
+            return Err(internal("기준 커밋을 확인하지 못했습니다.".to_owned()));
+        }
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
     let branch = task
         .git_branch
         .clone()
