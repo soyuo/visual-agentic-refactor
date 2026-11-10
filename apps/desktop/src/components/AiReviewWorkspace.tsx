@@ -2,11 +2,13 @@ import { createEffect, createSignal, onMount, Show } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import {
   cancelTask,
+  createFixTask,
   disconnectOpenAiSubscription,
   deleteProviderCredential,
   listProviderCredentials,
   getOpenAiSubscriptionStatus,
   listReviewSessions,
+  listFixTasks,
   loadReviewSession,
   approveReviewTransfer,
   runAiReview,
@@ -27,6 +29,7 @@ import {
   type ScanEntry,
   type StoredReviewSession,
   type StoredReviewSessionSummary,
+  type StoredFixTask,
 } from "../lib/commands";
 import { isSensitiveTransferPath } from "../lib/externalTransferSafety";
 import { findingDecisionLabel, reviewOutcomeLabel, reviewOutcomeState } from "../lib/aiReviewViewModel";
@@ -73,6 +76,8 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [sessionLoading, setSessionLoading] = createSignal(false);
   const [sessionError, setSessionError] = createSignal<string | null>(null);
   const [savingDecisionKeys, setSavingDecisionKeys] = createSignal<string[]>([]);
+  const [fixTasks, setFixTasks] = createSignal<StoredFixTask[]>([]);
+  const [creatingFixTaskId, setCreatingFixTaskId] = createSignal<string | null>(null);
   let previewRequestVersion = 0;
   let sessionRequestVersion = 0;
   let consentDialog: HTMLElement | undefined;
@@ -137,6 +142,18 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
       setContextPreview(null);
       setPreviewError(null);
     }
+  });
+
+  createEffect(() => {
+    const path = props.project?.path ?? "";
+    const session = activeSession();
+    if (!path || !session) {
+      setFixTasks([]);
+      return;
+    }
+    void listFixTasks(path).then((tasks) => {
+      if (props.project?.path === path && activeSession()?.sessionId === session.sessionId) setFixTasks(tasks);
+    }).catch(() => setFixTasks([]));
   });
 
   onMount(() => {
@@ -437,6 +454,22 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     }
   }
 
+  async function createFindingFixTask(findingId: string) {
+    const projectPath = props.project?.path;
+    const session = activeSession();
+    if (!projectPath || !session || creatingFixTaskId() || session.validationState === "invalid") return;
+    setCreatingFixTaskId(findingId);
+    setSessionError(null);
+    try {
+      const task = await createFixTask(projectPath, session.sessionId, findingId);
+      setFixTasks((tasks) => [task, ...tasks.filter((item) => item.taskId !== task.taskId)]);
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setCreatingFixTaskId(null);
+    }
+  }
+
   return (
     <div class="ai-review-workspace">
       <div class="content-heading">
@@ -674,6 +707,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                 const decision = finding.decision;
                 const decisionKey = `${session().sessionId}:${finding.findingId}`;
                 const saving = savingDecisionKeys().includes(decisionKey);
+                const fixTask = fixTasks().find((task) => task.sessionId === session().sessionId && task.findingId === finding.findingId);
                 return <article class="review-finding-card" aria-labelledby={`finding-${finding.findingId}`}>
                   <div class="review-finding-heading">
                     <h4 id={`finding-${finding.findingId}`}>{result.title}</h4>
@@ -703,6 +737,14 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                       <button class="secondary-button" type="button" disabled={saving || session().validationState === "invalid"} aria-pressed={decision.status === "rejected"} onClick={() => void decideFinding(finding.findingId, "rejected")}>{saving ? "저장 중…" : "거절"}</button>
                     </div>
                   </div>
+                  <Show when={decision.status === "approved"}>
+                    <div class="finding-decision-row">
+                      <span role="status">수정 작업: {fixTask?.status ?? "없음"}</span>
+                      <button class="secondary-button" type="button" disabled={Boolean(fixTask) || creatingFixTaskId() !== null} onClick={() => void createFindingFixTask(finding.findingId)}>
+                        {creatingFixTaskId() === finding.findingId ? "생성 중…" : fixTask ? "작업 등록됨" : "수정 작업 등록"}
+                      </button>
+                    </div>
+                  </Show>
                 </article>;
               })}
             </div>
