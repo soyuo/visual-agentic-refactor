@@ -668,6 +668,17 @@ export async function applyFixPatch(projectPath: string, taskId: string, patch: 
   catch (error) { throw toAppCommandError(error); }
 }
 
+export interface FixPatchDiffResponse {
+  taskId: string;
+  files: string[];
+  diff: string;
+}
+
+export async function getFixPatchDiff(projectPath: string, taskId: string): Promise<FixPatchDiffResponse> {
+  try { return await invoke<FixPatchDiffResponse>("get_fix_patch_diff", { request: { projectPath, taskId } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
 export async function analyzeSpringProject(
   request: ScanProjectRequest,
 ): Promise<AnalyzeSpringProjectResponse> {

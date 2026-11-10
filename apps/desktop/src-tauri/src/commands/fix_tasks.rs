@@ -61,6 +61,63 @@ pub struct ApplyFixPatchRequest {
     pub patch: String,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FixPatchDiffResponse {
+    pub task_id: String,
+    pub files: Vec<String>,
+    pub diff: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetFixPatchDiffRequest {
+    pub project_path: String,
+    pub task_id: String,
+}
+
+#[tauri::command]
+pub fn get_fix_patch_diff(
+    request: GetFixPatchDiffRequest,
+    persistence: State<'_, PersistenceState>,
+) -> Result<FixPatchDiffResponse, CommandError> {
+    validate(&request.project_path, &request.task_id, "patch diff")?;
+    let task = persistence
+        .database()?
+        .load_fix_task(&request.project_path, &request.task_id)
+        .map_err(internal)?
+        .ok_or_else(|| invalid("Fix task was not found"))?;
+    let workspace_path = task
+        .workspace_path
+        .as_deref()
+        .ok_or_else(|| invalid("Patch workspace is not ready"))?;
+    let workspace = validate_stored_workspace_path(
+        Path::new(&request.project_path),
+        workspace_path,
+        &request.task_id,
+    )?;
+    if task.workspace_state != FixTaskWorkspaceState::Ready || !workspace.is_dir() {
+        return Err(invalid("Patch workspace is not ready"));
+    }
+    let output = Command::new("git")
+        .args(["diff", "--no-ext-diff", "--binary", "--unified=80", "--"])
+        .current_dir(workspace)
+        .output()
+        .map_err(|error| internal(error.to_string()))?;
+    if !output.status.success() {
+        return Err(invalid(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    let diff = String::from_utf8_lossy(&output.stdout).to_string();
+    let files = changed_paths(workspace)?;
+    Ok(FixPatchDiffResponse {
+        task_id: request.task_id,
+        files,
+        diff,
+    })
+}
+
 #[tauri::command]
 pub fn create_fix_patch_plan(
     request: CreateFixPatchPlanRequest,

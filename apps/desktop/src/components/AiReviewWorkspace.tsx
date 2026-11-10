@@ -5,6 +5,7 @@ import {
   createFixTask,
   createFixPatchPlan,
   applyFixPatch,
+  getFixPatchDiff,
   disconnectOpenAiSubscription,
   deleteProviderCredential,
   listProviderCredentials,
@@ -85,6 +86,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [creatingFixTaskId, setCreatingFixTaskId] = createSignal<string | null>(null);
   const [patchTaskId, setPatchTaskId] = createSignal<string | null>(null);
   const [patchDrafts, setPatchDrafts] = createSignal<Record<string, string>>({});
+  const [patchDiffs, setPatchDiffs] = createSignal<Record<string, string>>({});
   let previewRequestVersion = 0;
   let sessionRequestVersion = 0;
   let consentDialog: HTMLElement | undefined;
@@ -525,6 +527,21 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     }
   }
 
+  async function loadPatchDiff(task: StoredFixTask) {
+    const projectPath = props.project?.path;
+    if (!projectPath || patchTaskId() !== null || task.workspaceState !== "ready") return;
+    setPatchTaskId(task.taskId);
+    setSessionError(null);
+    try {
+      const result = await getFixPatchDiff(projectPath, task.taskId);
+      setPatchDiffs((diffs) => ({ ...diffs, [task.taskId]: result.diff }));
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setPatchTaskId(null);
+    }
+  }
+
   return (
     <div class="ai-review-workspace">
       <div class="content-heading">
@@ -818,6 +835,12 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                                 <button class="secondary-button" type="button" disabled={patchTaskId() !== null || task.workspaceState !== "ready" || !(patchDrafts()[task.taskId]?.trim())} onClick={() => void applyPatch(task)}>
                                   {patchTaskId() === task.taskId ? "적용 중…" : "격리 workspace에 적용"}
                                 </button>
+                                <button class="secondary-button" type="button" disabled={patchTaskId() !== null || task.workspaceState !== "ready"} onClick={() => void loadPatchDiff(task)}>
+                                  {patchTaskId() === task.taskId ? "diff 조회 중…" : "현재 diff 조회"}
+                                </button>
+                                <Show when={patchDiffs()[task.taskId]}>
+                                  {(diff) => <pre class="patch-diff-preview" aria-label="격리 workspace diff">{diff()}</pre>}
+                                </Show>
                                 <Show when={task.afterPaths.length > 0}><span role="status">변경 기록: {task.afterPaths.join(", ")}</span></Show>
                               </>}
                             </Show>
