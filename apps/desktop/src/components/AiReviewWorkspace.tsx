@@ -6,6 +6,7 @@ import {
   createFixPatchPlan,
   applyFixPatch,
   getFixPatchDiff,
+  updateFixTaskOrchestration,
   disconnectOpenAiSubscription,
   deleteProviderCredential,
   listProviderCredentials,
@@ -35,6 +36,7 @@ import {
   type StoredReviewSession,
   type StoredReviewSessionSummary,
   type StoredFixTask,
+  type FixTaskOrchestrationState,
 } from "../lib/commands";
 import { isSensitiveTransferPath } from "../lib/externalTransferSafety";
 import { findingDecisionLabel, reviewOutcomeLabel, reviewOutcomeState } from "../lib/aiReviewViewModel";
@@ -502,9 +504,16 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     setPatchTaskId(task.taskId);
     setSessionError(null);
     try {
+      const applying = await updateFixTaskOrchestration(projectPath, task.taskId, "applying", task.orchestration.retryCount);
+      setFixTasks((tasks) => tasks.map((item) => item.taskId === applying.taskId ? applying : item));
       const updated = await createFixPatchPlan(projectPath, task.taskId, intent, [relativePath]);
-      setFixTasks((tasks) => tasks.map((item) => item.taskId === updated.taskId ? updated : item));
+      const completed = await updateFixTaskOrchestration(projectPath, task.taskId, "idle", task.orchestration.retryCount);
+      setFixTasks((tasks) => tasks.map((item) => item.taskId === completed.taskId ? { ...updated, orchestration: completed.orchestration } : item));
     } catch (cause: unknown) {
+      try {
+        const failed = await updateFixTaskOrchestration(projectPath, task.taskId, "failed", task.orchestration.retryCount, "patch_plan_failed", toAppCommandError(cause).message);
+        setFixTasks((tasks) => tasks.map((item) => item.taskId === failed.taskId ? failed : item));
+      } catch { /* preserve the original error */ }
       setSessionError(toAppCommandError(cause).message);
     } finally {
       setPatchTaskId(null);
@@ -518,9 +527,18 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     setPatchTaskId(task.taskId);
     setSessionError(null);
     try {
+      const applying = await updateFixTaskOrchestration(projectPath, task.taskId, "applying", task.orchestration.retryCount);
+      setFixTasks((tasks) => tasks.map((item) => item.taskId === applying.taskId ? applying : item));
       const updated = await applyFixPatch(projectPath, task.taskId, patch);
-      setFixTasks((tasks) => tasks.map((item) => item.taskId === updated.taskId ? updated : item));
+      const completed = await updateFixTaskOrchestration(projectPath, task.taskId, "completed", task.orchestration.retryCount);
+      setFixTasks((tasks) => tasks.map((item) => item.taskId === completed.taskId ? { ...updated, orchestration: completed.orchestration } : item));
     } catch (cause: unknown) {
+      try {
+        const nextRetry = Math.min(task.orchestration.retryCount + 1, task.orchestration.maxRetries);
+        const state: FixTaskOrchestrationState = nextRetry < task.orchestration.maxRetries ? "retry_scheduled" : "failed";
+        const failed = await updateFixTaskOrchestration(projectPath, task.taskId, state, nextRetry, "patch_apply_failed", toAppCommandError(cause).message);
+        setFixTasks((tasks) => tasks.map((item) => item.taskId === failed.taskId ? failed : item));
+      } catch { /* preserve the original error */ }
       setSessionError(toAppCommandError(cause).message);
     } finally {
       setPatchTaskId(null);
