@@ -596,6 +596,28 @@ pub fn update_fix_task_orchestration(
     if request.retry_count > 2 {
         return Err(invalid("재시도 횟수는 2회를 넘을 수 없습니다"));
     }
+    if request
+        .retry_reason
+        .as_deref()
+        .is_some_and(|reason| reason.len() > 256)
+    {
+        return Err(invalid("재시도 사유는 256바이트를 넘을 수 없습니다"));
+    }
+    if request
+        .failure_log
+        .as_deref()
+        .is_some_and(|log| log.len() > 32 * 1024)
+    {
+        return Err(invalid("실패 로그는 32KiB를 넘을 수 없습니다"));
+    }
+    let current = persistence
+        .database()?
+        .load_fix_task(&request.project_path, &request.task_id)
+        .map_err(internal)?
+        .ok_or_else(|| invalid("수정 작업을 찾지 못했습니다"))?;
+    if !valid_orchestration_transition(&current.orchestration.state, &request.state) {
+        return Err(invalid("허용되지 않은 패치 orchestration 상태 전이입니다"));
+    }
     persistence
         .database()?
         .update_fix_task_orchestration(
@@ -610,6 +632,32 @@ pub fn update_fix_task_orchestration(
             },
         )
         .map_err(internal)
+}
+
+fn valid_orchestration_transition(
+    current: &FixTaskOrchestrationState,
+    next: &FixTaskOrchestrationState,
+) -> bool {
+    use FixTaskOrchestrationState::*;
+    matches!(
+        (current, next),
+        (Idle, Applying | Cancelled)
+            | (
+                Applying,
+                Applying | Verifying | RetryScheduled | Failed | Cancelled | Completed
+            )
+            | (
+                Verifying,
+                Verifying | RetryScheduled | Failed | Cancelled | Completed
+            )
+            | (
+                RetryScheduled,
+                Applying | RetryScheduled | Failed | Cancelled
+            )
+            | (Failed, Applying | Failed | Cancelled)
+            | (Cancelled, Applying | Cancelled)
+            | (Completed, Completed)
+    )
 }
 
 fn validate(project_path: &str, first: &str, second: &str) -> Result<(), CommandError> {
