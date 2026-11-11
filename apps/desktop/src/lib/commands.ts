@@ -967,3 +967,84 @@ export async function disconnectOpenAiSubscription(): Promise<void> {
   try { await invoke("disconnect_openai_subscription"); }
   catch (error) { throw toAppCommandError(error); }
 }
+
+export type AnalyzerPluginTrust = "awaitingApproval" | "userApproved" | "rejected";
+export interface AnalyzerPluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  contractVersion: number;
+  language: SourceLanguage;
+  capabilities: string[];
+  moduleSha256: string;
+}
+export interface AnalyzerPluginSummary {
+  manifest: AnalyzerPluginManifest;
+  enabled: boolean;
+  trust: AnalyzerPluginTrust;
+}
+
+export async function installAnalyzerPlugin(manifestJson: string, wasmBase64: string): Promise<AnalyzerPluginSummary> {
+  try { return await invoke<AnalyzerPluginSummary>("install_analyzer_plugin", { request: { manifestJson, wasmBase64 } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+export async function listAnalyzerPlugins(): Promise<AnalyzerPluginSummary[]> {
+  try { return await invoke<AnalyzerPluginSummary[]>("list_analyzer_plugins"); }
+  catch (error) { throw toAppCommandError(error); }
+}
+export async function setAnalyzerPluginApproval(pluginId: string, approved: boolean): Promise<void> {
+  try { await invoke("set_analyzer_plugin_approval", { request: { pluginId, approved } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+export async function setAnalyzerPluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
+  try { await invoke("set_analyzer_plugin_enabled", { request: { pluginId, enabled } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+export async function removeAnalyzerPlugin(pluginId: string): Promise<boolean> {
+  try { return await invoke<boolean>("remove_analyzer_plugin", { request: { pluginId } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
+export interface AnalyzerPluginRunOutput {
+  language: SourceLanguage;
+  completeness: "complete" | "partial";
+  symbols: Array<{
+    id: string;
+    name: string;
+    kind: "package" | "class" | "interface" | "object" | "enum" | "record" | "constructor" | "function" | "method" | "property" | "field";
+    parentId: string | null;
+    location: SourceRange;
+    confidence: "confirmed" | "inferred" | "unknown";
+  }>;
+  imports: Array<{
+    name: string;
+    alias: string | null;
+    isStatic: boolean;
+    isWildcard: boolean;
+    location: SourceRange;
+  }>;
+  relationships: Array<{
+    kind: "calls" | "implements" | "extends" | "inherits" | "imports" | "injects" | "exposes" | "usesDto" | "controls" | "throws" | "annotatedBy";
+    sourceSymbolId: string;
+    targetSymbolId: string | null;
+    targetName: string | null;
+    location: SourceRange;
+    confidence: "confirmed" | "inferred" | "unknown";
+  }>;
+  diagnostics: Array<{
+    code: "parseError" | "unsupportedSyntax" | "partialResult" | "resourceLimitReached";
+    severity: "info" | "warning" | "error";
+    message: string;
+    location: SourceRange | null;
+  }>;
+}
+
+export async function runAnalyzerPlugin(pluginId: string, relativePath: string, source: string): Promise<AnalyzerPluginRunOutput> {
+  try {
+    return await invoke<AnalyzerPluginRunOutput>("run_analyzer_plugin", {
+      request: { pluginId, relativePath, source },
+    });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
