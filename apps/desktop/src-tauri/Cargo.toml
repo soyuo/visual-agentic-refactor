@@ -33,7 +33,7 @@ tree-sitter-javascript = "0.25.0"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-python = "0.23.6"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["macros", "rt", "time", "net", "io-util", "sync"] }
+tokio = { version = "1", features = ["macros", "rt", "time", "net", "io-util", "sync", "process"] }
 base64 = "0.22"
 rand = "0.9"
 sha2 = "0.10"

@@ -1,6 +1,7 @@
 pub mod ai_provider;
 pub mod analyzer;
 pub mod anthropic_provider;
+pub mod claude_code_provider;
 pub mod command_error;
 pub mod commands;
 pub mod context_builder;

@@ -48,6 +48,7 @@ import "./AiReviewWorkspace.css";
 const providers: Array<{ id: CredentialProvider; label: string }> = [
   { id: "openai", label: "OpenAI" },
   { id: "anthropic", label: "Anthropic" },
+  { id: "claudeCode", label: "Claude Code (공식 앱)" },
 ];
 
 interface AiReviewWorkspaceProps {
@@ -666,11 +667,12 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         <div class="credential-provider-row subscription-auth-row">
           <div>
             <strong>Claude Code 구독</strong>
-            <span>공식 제3자 OAuth 미지원 · Anthropic API 키 사용</span>
+            <span>공식 Claude Code CLI 사용 · 로그인은 Claude Code에서 직접 승인</span>
           </div>
-          <span class="muted-message">연결 불가</span>
+          <span class="muted-message">검토 시 CLI 설치 여부 확인</span>
         </div>
 
+        <Show when={selectedProvider() !== "claudeCode"}>
         <form class="credential-form" onSubmit={(event) => { event.preventDefault(); void saveSelectedCredential(); }}>
           <label for="credential-provider">제공자</label>
           <select
@@ -698,6 +700,10 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
             {busyProvider() === selectedProvider() ? "저장 중..." : "저장 또는 교체"}
           </button>
         </form>
+        </Show>
+        <Show when={selectedProvider() === "claudeCode"}>
+          <p class="muted-message">검토를 시작하면 Claude Code가 없을 때 npm으로 공식 CLI를 설치합니다. 로그인이 필요하면 Claude Code 터미널을 열어 Claude 앱의 Pro/Max 구독 로그인을 직접 완료해 주세요.</p>
+        </Show>
 
         {error() && <p class="inline-error" role="alert">{error()}</p>}
         {notice() && <p class="credential-notice" role="status">{notice()}</p>}
