@@ -663,6 +663,14 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
           </Show>
         </div>
 
+        <div class="credential-provider-row subscription-auth-row">
+          <div>
+            <strong>Claude Code 구독</strong>
+            <span>공식 제3자 OAuth 미지원 · Anthropic API 키 사용</span>
+          </div>
+          <span class="muted-message">연결 불가</span>
+        </div>
+
         <form class="credential-form" onSubmit={(event) => { event.preventDefault(); void saveSelectedCredential(); }}>
           <label for="credential-provider">제공자</label>
           <select
