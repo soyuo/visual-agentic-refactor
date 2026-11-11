@@ -543,6 +543,8 @@ impl SourceLanguage {
         match self {
             Self::Kotlin => "kotlin",
             Self::Java => "java",
+            Self::JavaScript => "javascript",
+            Self::TypeScript => "typescript",
         }
     }
 }

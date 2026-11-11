@@ -48,7 +48,7 @@ export interface OpenProjectResponse {
   persistenceError: string | null;
 }
 
-export type SourceLanguage = "kotlin" | "java";
+export type SourceLanguage = "kotlin" | "java" | "javascript" | "typescript";
 export type Confidence = "confirmed" | "inferred" | "unknown";
 export type GraphCompleteness = "complete" | "partial";
 export type GraphDiagnosticSeverity = "info" | "warning" | "error";

@@ -8,6 +8,7 @@ pub mod credentials;
 pub mod events;
 pub mod git_status;
 pub mod java;
+pub mod javascript;
 pub mod knowledge_graph;
 pub mod kotlin;
 pub mod openai_provider;
