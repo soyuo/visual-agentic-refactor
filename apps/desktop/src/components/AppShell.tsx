@@ -125,6 +125,12 @@ function AppShell(props: AppShellProps) {
       { label: "Java", result: detection.java },
       { label: "Spring Boot", result: detection.springBoot },
       { label: "Gradle", result: detection.gradle },
+      { label: "Node.js", result: detection.node },
+      { label: "React", result: detection.react },
+      { label: "Express", result: detection.express },
+      { label: "NestJS", result: detection.nestJs },
+      { label: "FastAPI", result: detection.fastApi },
+      { label: "Django", result: detection.django },
     ] satisfies Array<{ label: string; result: DetectionResult }>;
   };
 

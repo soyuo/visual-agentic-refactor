@@ -7,6 +7,7 @@ use crate::scanner::{ScanEntry, ScanEntryKind, ScanFileStatus};
 const MAX_GRADLE_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_GRADLE_CONFIG_FILES: usize = 16;
 const MAX_DETECTION_EVIDENCE: usize = 20;
+const MAX_FRAMEWORK_CONFIG_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +17,12 @@ pub struct ProjectDetection {
     pub python: DetectionResult,
     pub spring_boot: DetectionResult,
     pub gradle: DetectionResult,
+    pub node: DetectionResult,
+    pub react: DetectionResult,
+    pub express: DetectionResult,
+    pub nest_js: DetectionResult,
+    pub fast_api: DetectionResult,
+    pub django: DetectionResult,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +55,12 @@ pub fn detect_project(root: &Path, entries: &[ScanEntry]) -> ProjectDetection {
     let python = detect_language(entries, "py", "Python 소스 파일 확장자");
     let gradle = detect_gradle(entries);
     let spring_boot = detect_spring_boot(root, entries);
+    let node = detect_framework(root, entries, Framework::Node);
+    let react = detect_framework(root, entries, Framework::React);
+    let express = detect_framework(root, entries, Framework::Express);
+    let nest_js = detect_framework(root, entries, Framework::NestJs);
+    let fast_api = detect_framework(root, entries, Framework::FastApi);
+    let django = detect_framework(root, entries, Framework::Django);
 
     ProjectDetection {
         kotlin,
@@ -55,7 +68,145 @@ pub fn detect_project(root: &Path, entries: &[ScanEntry]) -> ProjectDetection {
         python,
         spring_boot,
         gradle,
+        node,
+        react,
+        express,
+        nest_js,
+        fast_api,
+        django,
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Framework {
+    Node,
+    React,
+    Express,
+    NestJs,
+    FastApi,
+    Django,
+}
+
+impl Framework {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Node => "Node.js",
+            Self::React => "React",
+            Self::Express => "Express",
+            Self::NestJs => "NestJS",
+            Self::FastApi => "FastAPI",
+            Self::Django => "Django",
+        }
+    }
+
+    fn markers(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &["\"dependencies\"", "\"devDependencies\""],
+            Self::React => &["react", "react-dom"],
+            Self::Express => &["express"],
+            Self::NestJs => &["@nestjs/core", "@nestjs/common"],
+            Self::FastApi => &["fastapi", "from fastapi", "import fastapi"],
+            Self::Django => &["django", "from django", "import django"],
+        }
+    }
+
+    fn candidate(self, path: &str) -> bool {
+        let name = file_name(path).to_ascii_lowercase();
+        match self {
+            Self::Node | Self::React | Self::Express | Self::NestJs => name == "package.json",
+            Self::FastApi | Self::Django => matches!(
+                name.as_str(),
+                "requirements.txt" | "pyproject.toml" | "poetry.lock" | "pipfile" | "pipfile.lock"
+            ),
+        }
+    }
+}
+
+fn detect_framework(root: &Path, entries: &[ScanEntry], framework: Framework) -> DetectionResult {
+    let candidates = entries
+        .iter()
+        .filter(|entry| {
+            matches!(entry.kind, ScanEntryKind::File) && framework.candidate(&entry.relative_path)
+        })
+        .collect::<Vec<_>>();
+    let mut evidence = Vec::new();
+    let mut omitted = 0;
+    let mut unreadable = false;
+    let mut marker_found = false;
+    for entry in candidates
+        .iter()
+        .filter(|entry| is_eligible(entry))
+        .take(MAX_GRADLE_CONFIG_FILES)
+    {
+        match read_config(root, entry) {
+            Some(contents)
+                if framework == Framework::Node
+                    || contains_any_marker(&contents, framework.markers()) =>
+            {
+                if framework == Framework::Node
+                    || contains_any_marker(&contents, framework.markers())
+                {
+                    marker_found = true;
+                    push_evidence(
+                        &mut evidence,
+                        &mut omitted,
+                        DetectionEvidence {
+                            relative_path: entry.relative_path.clone(),
+                            description: format!("{} 설정 또는 의존성 단서", framework.label()),
+                        },
+                    );
+                }
+            }
+            Some(_) => {}
+            None => unreadable = true,
+        }
+    }
+    if candidates.iter().any(|entry| !is_eligible(entry)) {
+        unreadable = true;
+    }
+    if marker_found {
+        detected(evidence, omitted)
+    } else if !candidates.is_empty() || unreadable {
+        uncertain(
+            evidence,
+            omitted,
+            &format!("{} 감지 근거를 확정하지 못했습니다.", framework.label()),
+        )
+    } else {
+        not_detected(&format!(
+            "{} 감지 근거를 찾지 못했습니다.",
+            framework.label()
+        ))
+    }
+}
+
+fn read_config(root: &Path, entry: &ScanEntry) -> Option<String> {
+    if !is_eligible(entry)
+        || entry.size_bytes.unwrap_or(MAX_FRAMEWORK_CONFIG_BYTES + 1) > MAX_FRAMEWORK_CONFIG_BYTES
+    {
+        return None;
+    }
+    let relative = Path::new(&entry.relative_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let canonical_root = fs::canonicalize(root).ok()?;
+    let path = fs::canonicalize(canonical_root.join(relative)).ok()?;
+    if !path.starts_with(&canonical_root) || !fs::metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
+fn contains_any_marker(contents: &str, markers: &[&str]) -> bool {
+    let lower = contents.to_ascii_lowercase();
+    markers
+        .iter()
+        .any(|marker| lower.contains(&marker.to_ascii_lowercase()))
 }
 
 fn detect_language(entries: &[ScanEntry], extension: &str, description: &str) -> DetectionResult {
@@ -518,5 +669,26 @@ mod tests {
 
         assert_eq!(evidence.len(), MAX_DETECTION_EVIDENCE);
         assert_eq!(omitted_count, 5);
+    }
+
+    #[test]
+    fn framework_candidates_are_limited_to_supported_config_files() {
+        assert!(Framework::React.candidate("package.json"));
+        assert!(Framework::FastApi.candidate("pyproject.toml"));
+        assert!(Framework::Django.candidate("requirements.txt"));
+        assert!(!Framework::React.candidate("src/App.tsx"));
+        assert!(!Framework::FastApi.candidate("src/main.py"));
+    }
+
+    #[test]
+    fn framework_markers_are_case_insensitive() {
+        assert!(contains_any_marker(
+            "{\"dependencies\": {\"react\": \"18\"}}",
+            Framework::React.markers()
+        ));
+        assert!(contains_any_marker(
+            "from FASTAPI import FastAPI",
+            Framework::FastApi.markers()
+        ));
     }
 }
