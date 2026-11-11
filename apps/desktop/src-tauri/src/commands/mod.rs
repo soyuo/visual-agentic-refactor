@@ -9,6 +9,7 @@ pub mod graph;
 pub mod integration;
 pub mod project;
 pub mod readiness;
+pub mod recovery;
 pub mod review_persistence;
 pub mod scanner;
 pub mod spring;

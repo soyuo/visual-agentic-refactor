@@ -322,7 +322,7 @@ export interface StoredFixTask {
   patchPlan: { intent: string; files: string[] } | null;
   beforePaths: string[];
   afterPaths: string[];
-  orchestration: { state: FixTaskOrchestrationState; retryCount: number; maxRetries: number; retryReason: string | null; failureLog: string | null };
+  orchestration: { state: FixTaskOrchestrationState; retryCount: number; maxRetries: number; retryReason: string | null; failureLog: string | null; recovery: { state: string; beforeSha: string; lastGoodSha: string; finalSha: string | null; changedFiles: string[]; diffSummary: string; verification: StoredFixTask["verification"]; errorKind: string | null; error: string | null; updatedAtUnixMs: number } | null };
   verification: { policy: FixVerificationPolicy; results: VerificationResult[] } | null;
   readiness: { state: "blocked" | "ready" | "approved"; findingId: string; changedFiles: string[]; verification: StoredFixTask["verification"]; baseCommit: string | null; approverAction: string | null; approvedAtUnixMs: number | null; evaluatedAtUnixMs: number; reason: string | null } | null;
 }
@@ -686,6 +686,14 @@ export interface IntegrateFixTaskResponse {
 
 export async function integrateFixTaskCommits(request: IntegrateFixTaskRequest): Promise<IntegrateFixTaskResponse> {
   return invoke<IntegrateFixTaskResponse>('integrate_fix_task_commits', { request });
+}
+
+export async function finalizeFixTask(request: { projectPath: string; taskId: string; expectedBaseCommit: string }): Promise<StoredFixTask> {
+  return invoke<StoredFixTask>('finalize_fix_task', { request });
+}
+
+export async function recoverFixTask(request: { projectPath: string; taskId: string }): Promise<StoredFixTask> {
+  return invoke<StoredFixTask>('recover_fix_task', { request });
 }
 
 export async function updateFixTaskOrchestration(
