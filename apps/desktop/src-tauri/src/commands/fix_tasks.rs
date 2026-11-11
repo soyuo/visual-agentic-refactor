@@ -408,6 +408,13 @@ pub fn prepare_fix_task_workspace(
     request: PrepareFixTaskWorkspaceRequest,
     persistence: State<'_, PersistenceState>,
 ) -> Result<StoredFixTask, CommandError> {
+    prepare_fix_task_workspace_inner(request, persistence.inner())
+}
+
+fn prepare_fix_task_workspace_inner(
+    request: PrepareFixTaskWorkspaceRequest,
+    persistence: &PersistenceState,
+) -> Result<StoredFixTask, CommandError> {
     validate(&request.project_path, &request.task_id, "workspace")?;
     let root = Path::new(&request.project_path);
     if !root.is_dir() {
@@ -512,6 +519,13 @@ pub fn remove_fix_task_workspace(
     request: RemoveFixTaskWorkspaceRequest,
     persistence: State<'_, PersistenceState>,
 ) -> Result<StoredFixTask, CommandError> {
+    remove_fix_task_workspace_inner(request, persistence.inner())
+}
+
+fn remove_fix_task_workspace_inner(
+    request: RemoveFixTaskWorkspaceRequest,
+    persistence: &PersistenceState,
+) -> Result<StoredFixTask, CommandError> {
     validate(&request.project_path, &request.task_id, "workspace")?;
     let task = persistence
         .database()?
@@ -601,8 +615,8 @@ pub fn manage_fix_task_lifecycle(
     if !request.approve {
         return Err(invalid("Explicit approval is required"));
     }
-    let db = persistence.database()?;
-    let task = db
+    let task = persistence
+        .database()?
         .load_fix_task(&request.project_path, &request.task_id)
         .map_err(internal)?
         .ok_or_else(|| invalid("Fix task was not found"))?;
@@ -627,40 +641,54 @@ pub fn manage_fix_task_lifecycle(
     lifecycle.approved_at_unix_ms = Some(now());
     lifecycle.state = "running".into();
     lifecycle.error = None;
-    db.update_fix_task_orchestration(
-        &request.project_path,
-        &request.task_id,
-        &FixTaskOrchestration {
-            lifecycle: Some(lifecycle.clone()),
-            ..task.orchestration.clone()
-        },
-    )
-    .map_err(internal)?;
+    persistence
+        .database()?
+        .update_fix_task_orchestration(
+            &request.project_path,
+            &request.task_id,
+            &FixTaskOrchestration {
+                lifecycle: Some(lifecycle.clone()),
+                ..task.orchestration.clone()
+            },
+        )
+        .map_err(internal)?;
+    let task_orchestration = task.orchestration.clone();
     let result = if request.action == "discard" {
-        remove_fix_task_workspace(
+        remove_fix_task_workspace_inner(
             RemoveFixTaskWorkspaceRequest {
                 project_path: request.project_path.clone(),
                 task_id: request.task_id.clone(),
             },
-            persistence,
+            persistence.inner(),
+        )
+    } else if request.action == "recover" {
+        prepare_fix_task_workspace_inner(
+            PrepareFixTaskWorkspaceRequest {
+                project_path: request.project_path.clone(),
+                task_id: request.task_id.clone(),
+            },
+            persistence.inner(),
         )
     } else {
-        Ok(task)
+        Ok(task.clone())
     };
     match result {
         Ok(mut saved) => {
             lifecycle.state = "completed".into();
             lifecycle.completed_at_unix_ms = Some(now());
-            db.update_fix_task_orchestration(
-                &request.project_path,
-                &request.task_id,
-                &FixTaskOrchestration {
-                    lifecycle: Some(lifecycle),
-                    ..saved.orchestration.clone()
-                },
-            )
-            .map_err(internal)?;
-            saved.orchestration.lifecycle = db
+            persistence
+                .database()?
+                .update_fix_task_orchestration(
+                    &request.project_path,
+                    &request.task_id,
+                    &FixTaskOrchestration {
+                        lifecycle: Some(lifecycle),
+                        ..saved.orchestration.clone()
+                    },
+                )
+                .map_err(internal)?;
+            saved.orchestration.lifecycle = persistence
+                .database()?
                 .load_fix_task(&request.project_path, &request.task_id)
                 .map_err(internal)?
                 .and_then(|t| t.orchestration.lifecycle);
@@ -670,12 +698,12 @@ pub fn manage_fix_task_lifecycle(
             lifecycle.state = "failed".into();
             lifecycle.completed_at_unix_ms = Some(now());
             lifecycle.error = Some(error.to_string());
-            let _ = db.update_fix_task_orchestration(
+            let _ = persistence.database()?.update_fix_task_orchestration(
                 &request.project_path,
                 &request.task_id,
                 &FixTaskOrchestration {
                     lifecycle: Some(lifecycle),
-                    ..task.orchestration
+                    ..task_orchestration
                 },
             );
             Err(error)
@@ -703,13 +731,24 @@ pub fn list_orphan_fix_worktrees(
         .database()?
         .list_fix_tasks(&project_path)
         .map_err(internal)?;
-    let paths: Vec<String> = known.into_iter().filter_map(|t| t.workspace_path).collect();
+    let normalize_path = |path: &str| {
+        path.replace('\\', "/")
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+    };
+    let normalized_project = normalize_path(&project_path);
+    let paths: Vec<String> = known
+        .into_iter()
+        .filter_map(|t| t.workspace_path)
+        .map(|p| normalize_path(&p))
+        .collect();
     let mut result = Vec::new();
     for line in String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|l| l.strip_prefix("worktree "))
     {
-        if line == project_path || paths.iter().any(|p| p == line) {
+        let normalized_line = normalize_path(line);
+        if normalized_line == normalized_project || paths.iter().any(|p| p == &normalized_line) {
             continue;
         }
         if line.contains(".visual-agentic-refactor-workspaces") {
