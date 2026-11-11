@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -712,7 +712,7 @@ pub fn list_orphan_fix_worktrees(
         if line == project_path || paths.iter().any(|p| p == line) {
             continue;
         }
-        if line.contains(".fix-worktrees") {
+        if line.contains(".visual-agentic-refactor-workspaces") {
             result.push(OrphanWorktree {
                 path: line.into(),
                 task_id: None,
