@@ -10,9 +10,10 @@ use crate::analyzer::{
 const MAX_SOURCE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_ITEMS: usize = 50_000;
 
-pub struct JavaScriptTypeScriptAnalyzer;
+pub struct JavaScriptAnalyzer;
+pub struct TypeScriptAnalyzer;
 
-impl Analyzer for JavaScriptTypeScriptAnalyzer {
+impl Analyzer for JavaScriptAnalyzer {
     fn descriptor(&self) -> crate::analyzer::AnalyzerDescriptor {
         crate::analyzer::AnalyzerDescriptor {
             language: SourceLanguage::JavaScript,
@@ -26,34 +27,55 @@ impl Analyzer for JavaScriptTypeScriptAnalyzer {
     }
 
     fn analyze(&self, input: AnalyzerInput<'_>) -> Result<AnalysisOutput, AnalyzerError> {
-        let language = language_for(input.relative_path).ok_or_else(|| AnalyzerError {
-            code: AnalyzerErrorCode::InvalidInput,
-            message: "JavaScript/TypeScript analysis requires a supported source extension.".into(),
-        })?;
-        if input.source.len() > MAX_SOURCE_BYTES {
-            return Err(AnalyzerError {
-                code: AnalyzerErrorCode::ResourceLimitExceeded,
-                message: format!("Source exceeds the {MAX_SOURCE_BYTES}-byte analysis limit."),
-            });
-        }
-        let mut parser = Parser::new();
-        let grammar = match language {
-            SourceLanguage::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-            SourceLanguage::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            _ => unreachable!(),
-        };
-        parser.set_language(&grammar).map_err(|e| AnalyzerError {
-            code: AnalyzerErrorCode::Internal,
-            message: format!("Unable to configure parser: {e}"),
-        })?;
-        let tree = parser
-            .parse(input.source, None)
-            .ok_or_else(|| AnalyzerError {
-                code: AnalyzerErrorCode::Internal,
-                message: "Parser did not return a syntax tree.".into(),
-            })?;
-        Ok(analyze_tree(input, language, &tree))
+        analyze_source(input)
     }
+}
+
+impl Analyzer for TypeScriptAnalyzer {
+    fn descriptor(&self) -> crate::analyzer::AnalyzerDescriptor {
+        let mut descriptor = JavaScriptAnalyzer.descriptor();
+        descriptor.language = SourceLanguage::TypeScript;
+        descriptor
+    }
+
+    fn analyze(&self, input: AnalyzerInput<'_>) -> Result<AnalysisOutput, AnalyzerError> {
+        analyze_source(input)
+    }
+}
+
+fn analyze_source(input: AnalyzerInput<'_>) -> Result<AnalysisOutput, AnalyzerError> {
+    let language = language_for(input.relative_path).ok_or_else(|| AnalyzerError {
+        code: AnalyzerErrorCode::InvalidInput,
+        message: "JavaScript/TypeScript analysis requires a supported source extension.".into(),
+    })?;
+    if input.source.len() > MAX_SOURCE_BYTES {
+        return Err(AnalyzerError {
+            code: AnalyzerErrorCode::ResourceLimitExceeded,
+            message: format!("Source exceeds the {MAX_SOURCE_BYTES}-byte analysis limit."),
+        });
+    }
+    let mut parser = Parser::new();
+    let grammar = match language {
+        SourceLanguage::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+        SourceLanguage::TypeScript
+            if input.relative_path.to_ascii_lowercase().ends_with(".tsx") =>
+        {
+            tree_sitter_typescript::LANGUAGE_TSX.into()
+        }
+        SourceLanguage::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        _ => unreachable!(),
+    };
+    parser.set_language(&grammar).map_err(|e| AnalyzerError {
+        code: AnalyzerErrorCode::Internal,
+        message: format!("Unable to configure parser: {e}"),
+    })?;
+    let tree = parser
+        .parse(input.source, None)
+        .ok_or_else(|| AnalyzerError {
+            code: AnalyzerErrorCode::Internal,
+            message: "Parser did not return a syntax tree.".into(),
+        })?;
+    Ok(analyze_tree(&input, language, &tree))
 }
 
 fn cap(feature: AnalysisFeature, support: SupportLevel) -> AnalyzerCapability {
@@ -111,6 +133,19 @@ fn walk(
     stack: &mut Vec<Context>,
 ) {
     if out.symbols.len() + out.relationships.len() >= MAX_ITEMS {
+        out.completeness = AnalysisCompleteness::Partial;
+        if !out
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::ResourceLimitReached)
+        {
+            out.diagnostics.push(AnalyzerDiagnostic {
+                code: DiagnosticCode::ResourceLimitReached,
+                severity: DiagnosticSeverity::Warning,
+                message: format!("Analysis reached the {MAX_ITEMS}-item limit."),
+                location: None,
+            });
+        }
         return;
     }
     let kind = node.kind();
@@ -199,7 +234,8 @@ fn declaration(node: Node<'_>, source: &str) -> Option<(String, SymbolKind)> {
         .and_then(|n| n.utf8_text(source.as_bytes()).ok())
         .map(str::to_owned)
         .or_else(|| {
-            node.child(0)
+            node.named_child(0)
+                .and_then(|declaration| declaration.child_by_field_name("name"))
                 .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                 .map(str::to_owned)
         })?;
@@ -227,7 +263,7 @@ mod tests {
     #[test]
     fn extracts_types_imports_calls_and_control_flow() {
         let source = "import x from 'x'; class A { run() { if (x) foo(); } }";
-        let out = JavaScriptTypeScriptAnalyzer
+        let out = JavaScriptAnalyzer
             .analyze(AnalyzerInput {
                 relative_path: "a.js",
                 source,
