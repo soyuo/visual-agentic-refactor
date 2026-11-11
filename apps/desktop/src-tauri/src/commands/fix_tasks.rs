@@ -2,12 +2,13 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 use crate::command_error::{CommandError, CommandErrorCode};
 use crate::persistence::{
-    FixTaskOrchestration, FixTaskOrchestrationState, FixTaskStatus, FixTaskWorkspaceState,
-    PersistenceState, StoredFixTask,
+    FixTaskLifecycle, FixTaskOrchestration, FixTaskOrchestrationState, FixTaskStatus,
+    FixTaskWorkspaceState, PersistenceState, StoredFixTask,
 };
 
 #[derive(Debug, Deserialize)]
@@ -572,6 +573,155 @@ pub fn remove_fix_task_workspace(
         .map_err(internal)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManageFixTaskLifecycleRequest {
+    pub project_path: String,
+    pub task_id: String,
+    pub action: String,
+    pub approve: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanWorktree {
+    pub path: String,
+    pub task_id: Option<String>,
+}
+
+#[tauri::command]
+pub fn manage_fix_task_lifecycle(
+    request: ManageFixTaskLifecycleRequest,
+    persistence: State<'_, PersistenceState>,
+) -> Result<StoredFixTask, CommandError> {
+    validate(&request.project_path, &request.task_id, "lifecycle")?;
+    if !matches!(request.action.as_str(), "archive" | "discard" | "recover") {
+        return Err(invalid("Unsupported lifecycle action"));
+    }
+    if !request.approve {
+        return Err(invalid("Explicit approval is required"));
+    }
+    let db = persistence.database()?;
+    let task = db
+        .load_fix_task(&request.project_path, &request.task_id)
+        .map_err(internal)?
+        .ok_or_else(|| invalid("Fix task was not found"))?;
+    let now = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or_default()
+    };
+    let mut lifecycle = task
+        .orchestration
+        .lifecycle
+        .clone()
+        .unwrap_or(FixTaskLifecycle {
+            action: request.action.clone(),
+            state: "pending".into(),
+            approved_at_unix_ms: None,
+            completed_at_unix_ms: None,
+            error: None,
+        });
+    lifecycle.action = request.action.clone();
+    lifecycle.approved_at_unix_ms = Some(now());
+    lifecycle.state = "running".into();
+    lifecycle.error = None;
+    db.update_fix_task_orchestration(
+        &request.project_path,
+        &request.task_id,
+        &FixTaskOrchestration {
+            lifecycle: Some(lifecycle.clone()),
+            ..task.orchestration.clone()
+        },
+    )
+    .map_err(internal)?;
+    let result = if request.action == "discard" {
+        remove_fix_task_workspace(
+            RemoveFixTaskWorkspaceRequest {
+                project_path: request.project_path.clone(),
+                task_id: request.task_id.clone(),
+            },
+            persistence,
+        )
+    } else {
+        Ok(task)
+    };
+    match result {
+        Ok(mut saved) => {
+            lifecycle.state = "completed".into();
+            lifecycle.completed_at_unix_ms = Some(now());
+            db.update_fix_task_orchestration(
+                &request.project_path,
+                &request.task_id,
+                &FixTaskOrchestration {
+                    lifecycle: Some(lifecycle),
+                    ..saved.orchestration.clone()
+                },
+            )
+            .map_err(internal)?;
+            saved.orchestration.lifecycle = db
+                .load_fix_task(&request.project_path, &request.task_id)
+                .map_err(internal)?
+                .and_then(|t| t.orchestration.lifecycle);
+            Ok(saved)
+        }
+        Err(error) => {
+            lifecycle.state = "failed".into();
+            lifecycle.completed_at_unix_ms = Some(now());
+            lifecycle.error = Some(error.to_string());
+            let _ = db.update_fix_task_orchestration(
+                &request.project_path,
+                &request.task_id,
+                &FixTaskOrchestration {
+                    lifecycle: Some(lifecycle),
+                    ..task.orchestration
+                },
+            );
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn list_orphan_fix_worktrees(
+    project_path: String,
+    persistence: State<'_, PersistenceState>,
+) -> Result<Vec<OrphanWorktree>, CommandError> {
+    validate(&project_path, "orphan-scan", "lifecycle")?;
+    let output = Command::new("git")
+        .current_dir(&project_path)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|e| internal(e.to_string()))?;
+    if !output.status.success() {
+        return Err(internal(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    let known = persistence
+        .database()?
+        .list_fix_tasks(&project_path)
+        .map_err(internal)?;
+    let paths: Vec<String> = known.into_iter().filter_map(|t| t.workspace_path).collect();
+    let mut result = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+    {
+        if line == project_path || paths.iter().any(|p| p == line) {
+            continue;
+        }
+        if line.contains(".fix-worktrees") {
+            result.push(OrphanWorktree {
+                path: line.into(),
+                task_id: None,
+            });
+        }
+    }
+    Ok(result)
+}
+
 #[tauri::command]
 pub fn create_fix_task(
     request: FixTaskRequest,
@@ -668,6 +818,7 @@ pub fn update_fix_task_orchestration(
                 integration: current.orchestration.integration,
                 recovery: current.orchestration.recovery,
                 remote: current.orchestration.remote,
+                lifecycle: current.orchestration.lifecycle,
             },
         )
         .map_err(internal)

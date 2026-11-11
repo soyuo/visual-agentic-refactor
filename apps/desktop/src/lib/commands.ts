@@ -303,6 +303,7 @@ export interface StoredReviewSession extends StoredReviewSessionSummary {
 
 export type FixTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type FixTaskOrchestrationState = "idle" | "applying" | "verifying" | "retry_scheduled" | "failed" | "cancelled" | "completed";
+export type FixTaskLifecycle = { action: string; state: string; approvedAtUnixMs: number | null; completedAtUnixMs: number | null; error: string | null };
 
 export interface StoredFixTask {
   taskId: string;
@@ -322,7 +323,7 @@ export interface StoredFixTask {
   patchPlan: { intent: string; files: string[] } | null;
   beforePaths: string[];
   afterPaths: string[];
-  orchestration: { state: FixTaskOrchestrationState; retryCount: number; maxRetries: number; retryReason: string | null; failureLog: string | null; recovery: { state: string; beforeSha: string; lastGoodSha: string; finalSha: string | null; changedFiles: string[]; diffSummary: string; verification: StoredFixTask["verification"]; errorKind: string | null; error: string | null; updatedAtUnixMs: number } | null; remote: { action: "push" | "pull_request"; state: string; expectedBaseCommit: string; branch: string; title: string | null; body: string | null; approvedAtUnixMs: number | null; completedAtUnixMs: number | null; resultUrl: string | null; error: string | null } | null };
+  orchestration: { state: FixTaskOrchestrationState; retryCount: number; maxRetries: number; retryReason: string | null; failureLog: string | null; recovery: { state: string; beforeSha: string; lastGoodSha: string; finalSha: string | null; changedFiles: string[]; diffSummary: string; verification: StoredFixTask["verification"]; errorKind: string | null; error: string | null; updatedAtUnixMs: number } | null; remote: { action: "push" | "pull_request"; state: string; expectedBaseCommit: string; branch: string; title: string | null; body: string | null; approvedAtUnixMs: number | null; completedAtUnixMs: number | null; resultUrl: string | null; error: string | null } | null; lifecycle: FixTaskLifecycle | null };
   verification: { policy: FixVerificationPolicy; results: VerificationResult[] } | null;
   readiness: { state: "blocked" | "ready" | "approved"; findingId: string; changedFiles: string[]; verification: StoredFixTask["verification"]; baseCommit: string | null; approverAction: string | null; approvedAtUnixMs: number | null; evaluatedAtUnixMs: number; reason: string | null } | null;
 }
@@ -707,6 +708,19 @@ export async function updateFixTaskOrchestration(
   try {
     return await invoke<StoredFixTask>("update_fix_task_orchestration", { request: { projectPath, taskId, state, retryCount, retryReason, failureLog } });
   } catch (error) { throw toAppCommandError(error); }
+}
+
+export async function manageFixTaskLifecycle(request: {
+  projectPath: string;
+  taskId: string;
+  action: "archive" | "discard" | "recover";
+  approve: boolean;
+}): Promise<StoredFixTask> {
+  return invoke<StoredFixTask>("manage_fix_task_lifecycle", { request });
+}
+
+export async function listOrphanFixWorktrees(projectPath: string): Promise<Array<{ path: string; taskId: string | null }>> {
+  return invoke<Array<{ path: string; taskId: string | null }>>("list_orphan_fix_worktrees", { projectPath });
 }
 
 export interface RemoteApprovalRequest { projectPath: string; taskId: string; action: "push" | "pull_request"; expectedBaseCommit: string; branch: string; title?: string; body?: string; }

@@ -49,6 +49,8 @@ pub fn run() {
             commands::fix_tasks::create_fix_task,
             commands::fix_tasks::prepare_fix_task_workspace,
             commands::fix_tasks::remove_fix_task_workspace,
+            commands::fix_tasks::manage_fix_task_lifecycle,
+            commands::fix_tasks::list_orphan_fix_worktrees,
             commands::fix_tasks::list_fix_tasks,
             commands::fix_tasks::update_fix_task,
             commands::fix_tasks::update_fix_task_orchestration,
