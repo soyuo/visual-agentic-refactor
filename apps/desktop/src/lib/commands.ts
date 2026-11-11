@@ -436,6 +436,12 @@ export interface ProjectDetection {
   python: DetectionResult;
   springBoot: DetectionResult;
   gradle: DetectionResult;
+  node: DetectionResult;
+  react: DetectionResult;
+  express: DetectionResult;
+  nestJs: DetectionResult;
+  fastApi: DetectionResult;
+  django: DetectionResult;
 }
 
 export interface ScanProjectResponse {
