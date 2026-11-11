@@ -194,6 +194,7 @@ pub struct AnalysisOutput {
 #[serde(rename_all = "camelCase")]
 pub enum AnalyzerErrorCode {
     InvalidInput,
+    Cancelled,
     ResourceLimitExceeded,
     DuplicateLanguage,
     AnalyzerUnavailable,

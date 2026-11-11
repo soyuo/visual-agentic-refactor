@@ -47,6 +47,7 @@ pub fn run() {
             commands::analyzer_plugins::set_analyzer_plugin_enabled,
             commands::analyzer_plugins::remove_analyzer_plugin,
             commands::analyzer_plugins::run_analyzer_plugin,
+            commands::analyzer_plugins::cancel_analyzer_plugin_run,
             commands::ai_review::approve_review_transfer,
             commands::ai_review::run_ai_review,
             commands::credentials::list_provider_credentials,

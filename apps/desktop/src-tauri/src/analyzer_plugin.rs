@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use wasmi::{Config, Engine, Linker, Module, Store, StoreLimitsBuilder};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
+use wasmi::{Caller, Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::analyzer::{
     AnalysisCompleteness, AnalysisOutput, AnalyzerError, AnalyzerErrorCode, AnalyzerInput,
@@ -14,6 +19,7 @@ pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FUEL: u64 = 50_000_000;
+pub const MAX_PLUGIN_EXECUTION_TIME: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -41,6 +47,11 @@ pub struct AnalyzerPluginSummary {
     pub manifest: AnalyzerPluginManifest,
     pub enabled: bool,
     pub trust: AnalyzerPluginTrust,
+}
+
+struct PluginStoreData {
+    limits: StoreLimits,
+    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -153,10 +164,13 @@ pub fn verify_package(manifest: &AnalyzerPluginManifest, wasm: &[u8]) -> Result<
             format!("Plugin module is not valid WebAssembly: {error}"),
         )
     })?;
-    if module.imports().next().is_some() {
+    if module
+        .imports()
+        .any(|import| import.module() != "env" || import.name() != "is_cancelled")
+    {
         return Err(plugin_error(
             AnalyzerErrorCode::InvalidInput,
-            "Plugin modules may not import host functions or resources.",
+            "Plugin modules may only import the cooperative `env.is_cancelled` function.",
         ));
     }
     Ok(())
@@ -167,7 +181,17 @@ pub fn run_plugin(
     wasm: &[u8],
     input: AnalyzerInput<'_>,
 ) -> Result<AnalysisOutput, AnalyzerError> {
+    run_plugin_cancellable(manifest, wasm, input, Arc::new(AtomicBool::new(false)))
+}
+
+pub fn run_plugin_cancellable(
+    manifest: &AnalyzerPluginManifest,
+    wasm: &[u8],
+    input: AnalyzerInput<'_>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<AnalysisOutput, AnalyzerError> {
     verify_package(manifest, wasm)?;
+    let deadline = Instant::now() + MAX_PLUGIN_EXECUTION_TIME;
     if input.relative_path.is_empty()
         || input.relative_path.starts_with('/')
         || input.relative_path.contains('\\')
@@ -198,19 +222,33 @@ pub fn run_plugin(
         .map_err(|error| plugin_error(AnalyzerErrorCode::InvalidInput, error.to_string()))?;
     let mut store = Store::new(
         &engine,
-        StoreLimitsBuilder::new()
-            .memory_size(MAX_MEMORY_BYTES)
-            .table_elements(10_000)
-            .instances(1)
-            .tables(1)
-            .memories(1)
-            .build(),
+        PluginStoreData {
+            limits: StoreLimitsBuilder::new()
+                .memory_size(MAX_MEMORY_BYTES)
+                .table_elements(10_000)
+                .instances(1)
+                .tables(1)
+                .memories(1)
+                .build(),
+            cancelled: Arc::clone(&cancelled),
+        },
     );
-    store.limiter(|limits| limits);
+    store.limiter(|data| &mut data.limits);
     store
         .set_fuel(MAX_FUEL)
         .map_err(|error| plugin_error(AnalyzerErrorCode::Internal, error.to_string()))?;
-    let linker = Linker::<wasmi::StoreLimits>::new(&engine);
+    let mut linker = Linker::<PluginStoreData>::new(&engine);
+    linker
+        .func_wrap(
+            "env",
+            "is_cancelled",
+            move |caller: Caller<PluginStoreData>| {
+                i32::from(
+                    caller.data().cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline,
+                )
+            },
+        )
+        .map_err(|error| plugin_error(AnalyzerErrorCode::Internal, error.to_string()))?;
     let instance = linker
         .instantiate_and_start(&mut store, &module)
         .map_err(|error| plugin_error(AnalyzerErrorCode::Internal, error.to_string()))?;
@@ -244,10 +282,34 @@ pub fn run_plugin(
     memory
         .write(&mut store, input_ptr as usize, &input_json)
         .map_err(|error| plugin_error(AnalyzerErrorCode::Internal, error.to_string()))?;
-    let packed = analyze
-        .call(&mut store, (input_ptr, input_len))
-        .map_err(|error| plugin_error(AnalyzerErrorCode::Internal, error.to_string()))?
-        as u64;
+    let packed = match analyze.call(&mut store, (input_ptr, input_len)) {
+        Ok(packed) => packed as u64,
+        Err(_error) if cancelled.load(Ordering::Relaxed) => {
+            return Err(plugin_error(
+                AnalyzerErrorCode::Cancelled,
+                "Analyzer plugin execution was cancelled.",
+            ));
+        }
+        Err(_error) if Instant::now() >= deadline => {
+            return Err(plugin_error(
+                AnalyzerErrorCode::ResourceLimitExceeded,
+                "Analyzer plugin exceeded its 10-second execution deadline.",
+            ));
+        }
+        Err(error) => return Err(plugin_error(AnalyzerErrorCode::Internal, error.to_string())),
+    };
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(plugin_error(
+            AnalyzerErrorCode::Cancelled,
+            "Analyzer plugin execution was cancelled.",
+        ));
+    }
+    if Instant::now() >= deadline {
+        return Err(plugin_error(
+            AnalyzerErrorCode::ResourceLimitExceeded,
+            "Analyzer plugin exceeded its 10-second execution deadline.",
+        ));
+    }
     let output_ptr = (packed >> 32) as u32 as usize;
     let output_len = (packed & u32::MAX as u64) as usize;
     if output_len == 0 || output_len > MAX_OUTPUT_BYTES {
@@ -423,7 +485,37 @@ mod tests {
         let wasm = wat::parse_str(r#"(module (import "env" "read_file" (func)))"#).unwrap();
         let manifest = fixture_manifest(&wasm);
         let error = verify_package(&manifest, &wasm).unwrap_err();
-        assert!(error.message.contains("may not import host"));
+        assert!(error.message.contains("is_cancelled"));
+    }
+
+    #[test]
+    fn run_plugin_reports_cooperative_cancellation() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "env" "is_cancelled" (func $is_cancelled (result i32)))
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32) i32.const 256)
+                (func (export "analyze") (param i32 i32) (result i64)
+                    (call $is_cancelled)
+                    (drop)
+                    i64.const 68719476844)
+                (data (i32.const 16) "{\22language\22:\22kotlin\22,\22completeness\22:\22partial\22,\22symbols\22:[],\22imports\22:[],\22relationships\22:[],\22diagnostics\22:[]}")
+            )"#,
+        )
+        .unwrap();
+        let manifest = fixture_manifest(&wasm);
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let error = run_plugin_cancellable(
+            &manifest,
+            &wasm,
+            AnalyzerInput {
+                relative_path: "src/Main.kt",
+                source: "class Main {}",
+            },
+            cancelled,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, AnalyzerErrorCode::Cancelled);
     }
 
     #[test]

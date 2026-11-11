@@ -1039,11 +1039,18 @@ export interface AnalyzerPluginRunOutput {
   }>;
 }
 
-export async function runAnalyzerPlugin(pluginId: string, relativePath: string, source: string): Promise<AnalyzerPluginRunOutput> {
+export async function runAnalyzerPlugin(pluginId: string, runId: string, relativePath: string, source: string): Promise<AnalyzerPluginRunOutput> {
   try {
     return await invoke<AnalyzerPluginRunOutput>("run_analyzer_plugin", {
-      request: { pluginId, relativePath, source },
+      request: { pluginId, runId, relativePath, source },
     });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+export async function cancelAnalyzerPluginRun(runId: string): Promise<boolean> {
+  try {
+    return await invoke<boolean>("cancel_analyzer_plugin_run", { request: { runId } });
   } catch (error) {
     throw toAppCommandError(error);
   }
