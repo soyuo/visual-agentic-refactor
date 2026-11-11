@@ -81,6 +81,9 @@ pub fn finalize_fix_task(
     if task.base_commit.as_deref() != Some(request.expected_base_commit.as_str()) {
         return Err(invalid("기준 SHA가 일치하지 않습니다."));
     }
+    if recovery.state != "verification_failed" {
+        return Err(invalid("실패한 최종 검증 결과만 복구할 수 있습니다."));
+    }
     let workspace = task
         .workspace_path
         .clone()
