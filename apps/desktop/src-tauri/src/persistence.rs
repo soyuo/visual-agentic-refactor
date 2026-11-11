@@ -105,6 +105,23 @@ pub struct FixTaskOrchestration {
     pub integration: Option<FixTaskIntegration>,
     #[serde(default)]
     pub recovery: Option<FixTaskRecovery>,
+    #[serde(default)]
+    pub remote: Option<FixTaskRemoteOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FixTaskRemoteOperation {
+    pub action: String,
+    pub state: String,
+    pub expected_base_commit: String,
+    pub branch: String,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub approved_at_unix_ms: Option<i64>,
+    pub completed_at_unix_ms: Option<i64>,
+    pub result_url: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1062,7 +1079,7 @@ impl ProjectDatabase {
             "INSERT INTO fix_tasks (task_id, project_id, session_id, finding_id, status, target_paths_json, original_git_status_json, error_message, orchestration_json, created_at_unix_ms, updated_at_unix_ms)
              VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, NULL, ?7, ?8, ?8)",
             params![task_id, project_id, session_id, finding_id, target_paths_json, original_git_status_json,
-                serde_json::to_string(&FixTaskOrchestration { state: FixTaskOrchestrationState::Idle, retry_count: 0, max_retries: 2, retry_reason: None, failure_log: None, integration: None, recovery: None }).map_err(|error| format!("orchestration 상태를 저장하지 못했습니다: {error}"))?, now],
+                serde_json::to_string(&FixTaskOrchestration { state: FixTaskOrchestrationState::Idle, retry_count: 0, max_retries: 2, retry_reason: None, failure_log: None, integration: None, recovery: None, remote: None }).map_err(|error| format!("orchestration 상태를 저장하지 못했습니다: {error}"))?, now],
         ).map_err(|error| format!("수정 작업을 저장하지 못했습니다: {error}"))?;
         transaction
             .commit()
@@ -1113,7 +1130,7 @@ impl ProjectDatabase {
                 let patch_plan = row.get::<_, Option<String>>(11)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
                 let before_paths = row.get::<_, Option<String>>(12)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
                 let after_paths = row.get::<_, Option<String>>(13)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or_default();
-                let orchestration = row.get::<_, Option<String>>(14)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or(FixTaskOrchestration { state: FixTaskOrchestrationState::Idle, retry_count: 0, max_retries: 2, retry_reason: None, failure_log: None, integration: None, recovery: None });
+                let orchestration = row.get::<_, Option<String>>(14)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?.unwrap_or(FixTaskOrchestration { state: FixTaskOrchestrationState::Idle, retry_count: 0, max_retries: 2, retry_reason: None, failure_log: None, integration: None, recovery: None, remote: None });
                 let verification = row.get::<_, Option<String>>(15)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
                 let readiness = row.get::<_, Option<String>>(16)?.map(|value| serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()?;
                 Ok(StoredFixTask { task_id: task_id.to_owned(), project_path: row.get(0)?, session_id: row.get(1)?, finding_id: row.get(2)?, status, target_paths: paths, original_git_status, git_branch: row.get(6)?, base_commit: row.get(7)?, workspace_path: row.get(8)?, workspace_state, workspace_error: row.get(10)?, patch_plan, before_paths, after_paths, orchestration, verification, readiness, error_message: row.get(17)?, created_at_unix_ms: row.get(18)?, updated_at_unix_ms: row.get(19)? })
@@ -1189,6 +1206,38 @@ impl ProjectDatabase {
         drop(connection);
         self.load_fix_task(root_path, task_id)?
             .ok_or_else(|| "수정 작업을 다시 불러오지 못했습니다.".to_owned())
+    }
+
+    pub fn claim_fix_task_remote_execution(
+        &self,
+        root_path: &str,
+        task_id: &str,
+        expected: &FixTaskOrchestration,
+        claimed: &FixTaskOrchestration,
+    ) -> Result<bool, String> {
+        let expected_json = serde_json::to_string(expected)
+            .map_err(|error| format!("원격 작업 상태를 직렬화하지 못했습니다: {error}"))?;
+        let claimed_json = serde_json::to_string(claimed)
+            .map_err(|error| format!("원격 작업 claim을 직렬화하지 못했습니다: {error}"))?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let updated = connection
+            .execute(
+                "UPDATE fix_tasks SET orchestration_json = ?1, updated_at_unix_ms = ?2
+                 WHERE task_id = ?3 AND project_id = (SELECT id FROM projects WHERE root_path = ?4)
+                   AND orchestration_json = ?5",
+                params![
+                    claimed_json,
+                    current_time_unix_ms()?,
+                    task_id,
+                    root_path,
+                    expected_json
+                ],
+            )
+            .map_err(|error| format!("원격 작업 claim을 저장하지 못했습니다: {error}"))?;
+        Ok(updated == 1)
     }
 
     pub fn save_fix_verification(

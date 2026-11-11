@@ -61,6 +61,8 @@ pub fn run() {
             commands::verification::list_fix_verification_candidates,
             commands::verification::run_fix_verification,
             commands::readiness::evaluate_fix_commit_readiness,
+            commands::remote::approve_fix_task_remote_operation,
+            commands::remote::execute_fix_task_remote_operation,
             commands::context::preview_review_context,
             commands::review_persistence::save_review_session,
             commands::review_persistence::list_review_sessions,
