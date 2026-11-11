@@ -5,6 +5,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use tauri::State;
 
+macro_rules! persist_remote_failure {
+    ($persistence:expr, $request:expr, $task:expr, $remote:expr, $error:expr) => {{
+        let error = $error;
+        $task.orchestration.remote = Some(FixTaskRemoteOperation {
+            state: "failed".into(),
+            error: Some(error.message.clone()),
+            completed_at_unix_ms: Some(now()),
+            ..$remote.clone()
+        });
+        $persistence
+            .database()?
+            .update_fix_task_orchestration(
+                &$request.project_path,
+                &$request.task_id,
+                &$task.orchestration,
+            )
+            .map_err(internal)?;
+        return Err(error);
+    }};
+}
+
 use crate::command_error::{CommandError, CommandErrorCode};
 use crate::commands::fix_tasks::validate_stored_workspace_path;
 use crate::persistence::{FixTaskRemoteOperation, PersistenceState, StoredFixTask};
@@ -200,14 +221,32 @@ pub fn execute_fix_task_remote_operation(
         return Err(invalid("원격 작업이 이미 실행 중이거나 완료되었습니다"));
     }
     task.orchestration = claimed;
+    if task.workspace_path.is_none() {
+        persist_remote_failure!(
+            persistence,
+            request,
+            task,
+            remote,
+            invalid("workspace missing after remote execution claim")
+        );
+    }
     let workspace = task
         .workspace_path
         .clone()
         .ok_or_else(|| invalid("workspace가 없습니다"))?;
-    let status = Command::new("git")
+    let status = match Command::new("git")
         .args(["-C", &workspace, "status", "--porcelain"])
         .output()
-        .map_err(|e| internal(e.to_string()))?;
+    {
+        Ok(output) => output,
+        Err(error) => persist_remote_failure!(
+            persistence,
+            request,
+            task,
+            remote,
+            internal(error.to_string())
+        ),
+    };
     if !status.status.success() || !status.stdout.is_empty() {
         let error = invalid("workspace must be clean immediately before remote execution");
         task.orchestration.remote = Some(FixTaskRemoteOperation {
@@ -225,12 +264,20 @@ pub fn execute_fix_task_remote_operation(
             )
             .map_err(internal)?;
         return Err(error);
-        return Err(invalid("원격 작업 전 workspace가 깨끗해야 합니다"));
     }
-    let branch = Command::new("git")
+    let branch = match Command::new("git")
         .args(["-C", &workspace, "branch", "--show-current"])
         .output()
-        .map_err(|e| internal(e.to_string()))?;
+    {
+        Ok(output) => output,
+        Err(error) => persist_remote_failure!(
+            persistence,
+            request,
+            task,
+            remote,
+            internal(error.to_string())
+        ),
+    };
     if String::from_utf8_lossy(&branch.stdout).trim() != remote.branch {
         let error = invalid("workspace branch changed after approval");
         task.orchestration.remote = Some(FixTaskRemoteOperation {
@@ -248,12 +295,20 @@ pub fn execute_fix_task_remote_operation(
             )
             .map_err(internal)?;
         return Err(error);
-        return Err(invalid("승인된 브랜치와 현재 workspace 브랜치가 다릅니다"));
     }
-    let head = Command::new("git")
+    let head = match Command::new("git")
         .args(["-C", &workspace, "rev-parse", "HEAD"])
         .output()
-        .map_err(|e| internal(e.to_string()))?;
+    {
+        Ok(output) => output,
+        Err(error) => persist_remote_failure!(
+            persistence,
+            request,
+            task,
+            remote,
+            internal(error.to_string())
+        ),
+    };
     if !head.status.success()
         || String::from_utf8_lossy(&head.stdout).trim() != remote.expected_base_commit
     {
@@ -273,9 +328,6 @@ pub fn execute_fix_task_remote_operation(
             )
             .map_err(internal)?;
         return Err(error);
-        return Err(invalid(
-            "원격 작업 직전 workspace HEAD가 승인된 기준 커밋과 다릅니다",
-        ));
     }
     let execution_result: Result<std::process::Output, CommandError> = (|| {
         let output = if remote.action == "push" {
