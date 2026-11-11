@@ -11,6 +11,7 @@ pub mod java;
 pub mod javascript;
 pub mod knowledge_graph;
 pub mod kotlin;
+pub mod local_runtime;
 pub mod openai_provider;
 pub mod persistence;
 pub mod project_detection;
@@ -43,6 +44,7 @@ pub fn run() {
             commands::credentials::list_provider_credentials,
             commands::credentials::save_provider_credential,
             commands::credentials::delete_provider_credential,
+            commands::local_runtime::run_local_llm,
             subscription_auth::sign_in_openai_subscription,
             subscription_auth::cancel_openai_subscription_sign_in,
             subscription_auth::disconnect_openai_subscription,

@@ -7,6 +7,7 @@ pub mod fix_tasks;
 pub mod git;
 pub mod graph;
 pub mod integration;
+pub mod local_runtime;
 pub mod project;
 pub mod readiness;
 pub mod recovery;
