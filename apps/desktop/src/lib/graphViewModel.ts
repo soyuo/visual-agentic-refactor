@@ -4,9 +4,6 @@ export type GraphViewKind = "architecture" | "api" | "dependencies" | "flow";
 
 export const MAX_VISIBLE_GRAPH_NODES = 60;
 export const MAX_VISIBLE_GRAPH_EDGES = 300;
-export const MAX_GRAPH_SOURCE_NODES = 100_000;
-export const MAX_GRAPH_SOURCE_EDGES = 250_000;
-
 const edgeTypes: Record<GraphViewKind, ReadonlySet<GraphEdge["edgeType"]>> = {
   architecture: new Set(["contains", "declares", "inherits", "extends", "implements"]),
   api: new Set(["exposes", "usesDto"]),

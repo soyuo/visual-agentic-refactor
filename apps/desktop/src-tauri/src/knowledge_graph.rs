@@ -794,6 +794,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_snapshots_over_node_limit_before_id_validation() {
+        let mut input = snapshot("oversized", "run");
+        input
+            .nodes
+            .resize(MAX_SNAPSHOT_NODES + 1, input.nodes[0].clone());
+        let error = validate_snapshot(&input).unwrap_err();
+        assert!(error.contains("100000 node limit"));
+    }
+
+    #[test]
     fn writes_and_reads_partial_snapshot_with_unknown_relationship_and_evidence() {
         let (database, directory) = database();
         let input = snapshot("snapshot-1", "run");
