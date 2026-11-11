@@ -39,6 +39,10 @@ rand = "0.9"
 sha2 = "0.10"
 jsonwebtoken = { version = "11.1", default-features = false, features = ["rust_crypto"] }
 async-trait = "0.1"
+wasmi = { version = "2.0.0", features = ["extra-checks"] }
+
+[dev-dependencies]
+wat = "1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

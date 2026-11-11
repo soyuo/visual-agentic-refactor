@@ -18,7 +18,7 @@ pub struct SourceRange {
 
 /// Identifier unique within one analyzer output. Graph storage assigns its own
 /// persistent identity when it stores the result.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SymbolId(pub String);
 
@@ -82,7 +82,7 @@ pub enum Confidence {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SymbolKind {
     Package,
@@ -98,7 +98,7 @@ pub enum SymbolKind {
     Field,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzerSymbol {
     pub id: SymbolId,
@@ -109,7 +109,7 @@ pub struct AnalyzerSymbol {
     pub confidence: Confidence,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzerImport {
     pub name: String,
@@ -119,7 +119,7 @@ pub struct AnalyzerImport {
     pub location: SourceRange,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RelationshipKind {
     Calls,
@@ -135,7 +135,7 @@ pub enum RelationshipKind {
     AnnotatedBy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzerRelationship {
     pub kind: RelationshipKind,
@@ -146,14 +146,14 @@ pub struct AnalyzerRelationship {
     pub confidence: Confidence,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AnalysisCompleteness {
     Complete,
     Partial,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticCode {
     ParseError,
@@ -162,7 +162,7 @@ pub enum DiagnosticCode {
     ResourceLimitReached,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticSeverity {
     Info,
@@ -170,7 +170,7 @@ pub enum DiagnosticSeverity {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzerDiagnostic {
     pub code: DiagnosticCode,
@@ -179,7 +179,7 @@ pub struct AnalyzerDiagnostic {
     pub location: Option<SourceRange>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisOutput {
     pub language: SourceLanguage,
