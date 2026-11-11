@@ -5,6 +5,7 @@ pub mod credentials;
 pub mod findings;
 pub mod fix_tasks;
 pub mod git;
+pub mod github;
 pub mod graph;
 pub mod integration;
 pub mod local_runtime;

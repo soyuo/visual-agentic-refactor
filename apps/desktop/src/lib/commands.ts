@@ -23,7 +23,7 @@ export interface AppInfoResponse {
   version: string;
 }
 
-export type CredentialProvider = "openai" | "anthropic";
+export type CredentialProvider = "openai" | "anthropic" | "github";
 export type LocalRuntimeKind = "llamaCpp" | "ollama";
 export interface LocalLlmRequest { runtime: LocalRuntimeKind; executablePath: string; modelPath: string; prompt: string; timeoutMs?: number; args?: string[]; }
 export interface LocalLlmResponse { text: string; structured: unknown; }
@@ -32,6 +32,23 @@ export interface ProviderCredentialStatus {
   provider: CredentialProvider;
   displayName: string;
   configured: boolean;
+}
+
+export interface GitHubProjectRequest { projectPath: string; }
+export interface GitHubNumberRequest { projectPath: string; number: number; }
+export interface GitHubRepository {
+  owner: string;
+  name: string;
+  htmlUrl: string;
+  defaultBranch: string;
+  private: boolean;
+}
+export interface GitHubIssueOrPullRequest {
+  number: number;
+  title: string;
+  state: string;
+  htmlUrl: string;
+  isPullRequest: boolean;
 }
 
 export interface OpenAiSubscriptionStatus {
@@ -905,6 +922,27 @@ export async function saveProviderCredential(
 export async function deleteProviderCredential(provider: CredentialProvider): Promise<void> {
   try {
     await invoke("delete_provider_credential", { request: { provider } });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function getGitHubRepository(projectPath: string): Promise<GitHubRepository> {
+  try {
+    return await invoke<GitHubRepository>("get_github_repository", { request: { projectPath } });
+  } catch (error) {
+    throw toAppCommandError(error);
+  }
+}
+
+export async function getGitHubIssueOrPullRequest(
+  projectPath: string,
+  number: number,
+): Promise<GitHubIssueOrPullRequest> {
+  try {
+    return await invoke<GitHubIssueOrPullRequest>("get_github_issue_or_pull_request", {
+      request: { projectPath, number },
+    });
   } catch (error) {
     throw toAppCommandError(error);
   }

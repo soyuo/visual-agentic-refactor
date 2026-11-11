@@ -121,6 +121,9 @@ pub async fn run_ai_review(
         CredentialProvider::Anthropic => {
             Box::new(AnthropicProvider::from_keyring().map_err(provider_error)?)
         }
+        CredentialProvider::GitHub => {
+            return Err(invalid("GitHub는 리뷰 제공자로 사용할 수 없습니다."));
+        }
     };
     let task = app_state.register_task()?;
     app.emit(

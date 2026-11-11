@@ -7,6 +7,7 @@ pub mod context_builder;
 pub mod credentials;
 pub mod events;
 pub mod git_status;
+pub mod github;
 pub mod java;
 pub mod javascript;
 pub mod knowledge_graph;
@@ -75,6 +76,8 @@ pub fn run() {
             commands::review_persistence::load_review_session,
             commands::review_persistence::set_finding_decision,
             commands::git::get_git_status,
+            commands::github::get_github_repository,
+            commands::github::get_github_issue_or_pull_request,
             commands::project::open_project,
             commands::project::get_last_project,
             commands::graph::save_graph_snapshot,
