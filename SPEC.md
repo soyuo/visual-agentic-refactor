@@ -281,6 +281,17 @@ Support OpenAI, Anthropic, local models, and compatible providers through a
 common adapter for calls, structured output, errors, usage, context limits, and
 retry policy.
 
+Provider authentication must remain explicit in the review UI: API-key
+credentials and subscription authentication are separate paths with separate
+consent and billing semantics. The MVP may use official, documented provider
+flows only. Claude Code subscription reviews use the locally installed official
+Claude Code CLI, not a third-party OAuth/token relay. If the CLI is missing, the
+app may ask npm to install `@anthropic-ai/claude-code` globally. If the CLI
+reports that authentication is required, the app opens the official Claude Code
+interactive flow so the user can complete Claude App Pro/Max subscription login.
+The app must not inspect, extract, store, or reuse Claude Code CLI tokens,
+cookies, or private endpoints; the CLI remains the only credential boundary.
+
 ## 12. Review Findings and State
 
 Finding fields: ID, project/snapshot IDs, selected scope, title, description,

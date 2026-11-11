@@ -9,6 +9,7 @@ use crate::ai_provider::{
     ReviewSelection, ensure_not_cancelled,
 };
 use crate::anthropic_provider::AnthropicProvider;
+use crate::claude_code_provider::ClaudeCodeProvider;
 use crate::command_error::{CommandError, CommandErrorCode};
 use crate::commands::context::ReviewContextPreviewState;
 use crate::commands::findings::{ValidateReviewFindingsRequest, validate_findings_request};
@@ -124,6 +125,7 @@ pub async fn run_ai_review(
         CredentialProvider::Anthropic => {
             Box::new(AnthropicProvider::from_keyring().map_err(provider_error)?)
         }
+        CredentialProvider::ClaudeCode => Box::new(ClaudeCodeProvider::new(root.clone())),
         CredentialProvider::GitHub => unreachable!("validated above"),
     };
     let task = app_state.register_task()?;

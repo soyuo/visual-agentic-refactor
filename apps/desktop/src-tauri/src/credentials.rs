@@ -16,6 +16,8 @@ pub enum CredentialProvider {
     OpenAi,
     #[serde(rename = "anthropic")]
     Anthropic,
+    #[serde(rename = "claudeCode")]
+    ClaudeCode,
     #[serde(rename = "github")]
     GitHub,
 }
@@ -25,6 +27,7 @@ impl CredentialProvider {
         match self {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
+            Self::ClaudeCode => "claude-code",
             Self::GitHub => "github",
         }
     }
@@ -33,6 +36,7 @@ impl CredentialProvider {
         match self {
             Self::OpenAi => "OpenAI",
             Self::Anthropic => "Anthropic",
+            Self::ClaudeCode => "Claude Code",
             Self::GitHub => "GitHub",
         }
     }
@@ -235,6 +239,12 @@ fn validate_credential(credential: &str) -> Result<(), CommandError> {
 }
 
 pub fn save(provider: CredentialProvider, credential: &str) -> Result<(), CommandError> {
+    if provider == CredentialProvider::ClaudeCode {
+        return Err(CommandError::new(
+            CommandErrorCode::InvalidInput,
+            "Claude Code는 API 키를 저장하지 않고 공식 CLI의 로그인 상태를 사용합니다.",
+        ));
+    }
     validate_credential(credential)?;
     entry(provider)?
         .set_password(credential)
@@ -242,6 +252,14 @@ pub fn save(provider: CredentialProvider, credential: &str) -> Result<(), Comman
 }
 
 pub fn is_configured(provider: CredentialProvider) -> Result<bool, CommandError> {
+    if provider == CredentialProvider::ClaudeCode {
+        // Claude Code owns its credentials. Only report whether the official
+        // executable is available; authentication is checked by the CLI itself.
+        return Ok(std::process::Command::new("claude")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success()));
+    }
     match entry(provider)?.get_password() {
         Ok(_credential) => Ok(true),
         Err(KeyringError::NoEntry) => Ok(false),
@@ -272,6 +290,7 @@ pub fn statuses() -> Result<Vec<ProviderCredentialStatus>, CommandError> {
     [
         CredentialProvider::OpenAi,
         CredentialProvider::Anthropic,
+        CredentialProvider::ClaudeCode,
         CredentialProvider::GitHub,
     ]
     .into_iter()
@@ -378,5 +397,21 @@ mod tests {
 
         assert_eq!(restored.issued_client_id, credential.issued_client_id);
         assert_eq!(restored.refresh_token, credential.refresh_token);
+    }
+
+    #[test]
+    fn subscription_status_serialization_does_not_expose_tokens() {
+        let status = OpenAiSubscriptionStatus {
+            connected: true,
+            inference_enabled: true,
+            account_email: Some("account@example.test".into()),
+        };
+        let serialized = serde_json::to_string(&status).expect("serialize public status");
+
+        assert!(serialized.contains("connected"));
+        assert!(serialized.contains("accountEmail"));
+        assert!(!serialized.contains("accessToken"));
+        assert!(!serialized.contains("refreshToken"));
+        assert!(!serialized.contains("idToken"));
     }
 }
