@@ -195,6 +195,30 @@ pub fn recover_fix_task(
     if !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
         return Err(invalid("recovery workspace has uncommitted changes"));
     }
+    let head = git(workspace, &["rev-parse", "HEAD"])?;
+    if !head.status.success() {
+        return Err(internal("failed to inspect recovery workspace HEAD"));
+    }
+    let current_sha = text(&head);
+    if recovery.final_sha.as_deref() != Some(current_sha.as_str()) {
+        return Err(invalid(
+            "recovery workspace HEAD does not match the persisted failed result",
+        ));
+    }
+    let valid_last_good = git(
+        workspace,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &recovery.before_sha,
+            &recovery.last_good_sha,
+        ],
+    )?;
+    if !valid_last_good.status.success() {
+        return Err(invalid(
+            "last good commit is not a descendant of the persisted base SHA",
+        ));
+    }
     let result = git(workspace, &["reset", "--hard", &recovery.last_good_sha])?;
     if !result.status.success() {
         return Err(internal("마지막 정상 상태로 복구하지 못했습니다."));
