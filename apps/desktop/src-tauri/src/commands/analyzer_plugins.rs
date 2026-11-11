@@ -144,7 +144,6 @@ pub async fn run_analyzer_plugin(
 ) -> Result<AnalysisOutput, CommandError> {
     let plugin_id = validate_plugin_id(&request.plugin_id)?.to_owned();
     let run_id = validate_plugin_id(&request.run_id)?.to_owned();
-    validate_plugin_input_path(&request.relative_path)?;
     validate_plugin_relative_path(&request.relative_path)?;
     let relative_path = request.relative_path;
     let source = request.source;
@@ -263,20 +262,6 @@ pub fn cancel_analyzer_plugin_run(
     }
 }
 fn validate_plugin_relative_path(path: &str) -> Result<(), CommandError> {
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.contains('\\')
-        || path
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
-    {
-        return Err(invalid(
-            "Plugin input path must be a normalized project-relative path.",
-        ));
-    }
-    Ok(())
-}
-fn validate_plugin_input_path(path: &str) -> Result<(), CommandError> {
     if path.is_empty()
         || path.starts_with('/')
         || path.contains('\\')
