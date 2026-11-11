@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::analyzer_plugin::{AnalyzerPluginManifest, AnalyzerPluginSummary, AnalyzerPluginTrust};
 use crate::context_builder::redact_secrets;
 use crate::git_status::GitStatusResponse;
 use crate::review_finding::{
@@ -15,7 +16,7 @@ use crate::review_finding::{
 
 use crate::command_error::{CommandError, CommandErrorCode};
 
-const CURRENT_SCHEMA_VERSION: i64 = 10;
+const CURRENT_SCHEMA_VERSION: i64 = 11;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.sql");
 const REVIEW_MIGRATION: &str = include_str!("../migrations/0003_review_persistence.sql");
@@ -34,6 +35,7 @@ const FIX_TASK_GIT_WORKTREE_MIGRATION: &str =
     include_str!("../migrations/0009_fix_task_git_worktree.sql");
 const FIX_TASK_READINESS_MIGRATION: &str =
     include_str!("../migrations/0010_fix_task_readiness.sql");
+const ANALYZER_PLUGIN_MIGRATION: &str = include_str!("../migrations/0011_analyzer_plugins.sql");
 
 static NEXT_REVIEW_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -294,6 +296,13 @@ pub struct StoredFile<'a> {
     pub file_status: Option<&'a str>,
 }
 
+pub struct StoredAnalyzerPlugin {
+    pub manifest: AnalyzerPluginManifest,
+    pub wasm_module: Vec<u8>,
+    pub trust: AnalyzerPluginTrust,
+    pub enabled: bool,
+}
+
 impl PersistenceState {
     pub fn initialize(data_dir: Result<PathBuf, String>) -> Self {
         match data_dir.and_then(ProjectDatabase::open) {
@@ -324,6 +333,127 @@ impl PersistenceState {
 }
 
 impl ProjectDatabase {
+    pub fn install_analyzer_plugin(
+        &self,
+        manifest: &AnalyzerPluginManifest,
+        wasm_module: &[u8],
+    ) -> Result<(), String> {
+        let manifest_json = serde_json::to_string(manifest)
+            .map_err(|error| format!("failed to serialize plugin manifest: {error}"))?;
+        let now = current_time_unix_ms()?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        connection.execute(
+            "INSERT INTO analyzer_plugins (plugin_id, manifest_json, wasm_module, trust_state, enabled, installed_at_unix_ms, updated_at_unix_ms) VALUES (?1, ?2, ?3, 'awaiting_approval', 0, ?4, ?4)",
+            params![manifest.id, manifest_json, wasm_module, now],
+        ).map_err(|error| format!("failed to install analyzer plugin: {error}"))?;
+        Ok(())
+    }
+
+    pub fn list_analyzer_plugins(&self) -> Result<Vec<AnalyzerPluginSummary>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        let mut statement = connection.prepare("SELECT manifest_json, trust_state, enabled FROM analyzer_plugins ORDER BY plugin_id")
+            .map_err(|error| format!("failed to prepare analyzer plugin query: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)? != 0,
+                ))
+            })
+            .map_err(|error| format!("failed to query analyzer plugins: {error}"))?;
+        rows.map(|row| {
+            let (manifest_json, trust_value, enabled) = row.map_err(|error| error.to_string())?;
+            let manifest = serde_json::from_str(&manifest_json)
+                .map_err(|error| format!("stored analyzer plugin manifest is invalid: {error}"))?;
+            let trust = analyzer_plugin_trust_from_db(&trust_value)?;
+            Ok(AnalyzerPluginSummary {
+                manifest,
+                enabled,
+                trust,
+            })
+        })
+        .collect()
+    }
+
+    pub fn approve_analyzer_plugin(&self, plugin_id: &str, approved: bool) -> Result<(), String> {
+        let trust = if approved {
+            "user_approved"
+        } else {
+            "rejected"
+        };
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        let changed = connection.execute("UPDATE analyzer_plugins SET trust_state = ?1, enabled = 0, updated_at_unix_ms = ?2 WHERE plugin_id = ?3", params![trust, current_time_unix_ms()?, plugin_id])
+            .map_err(|error| format!("failed to update analyzer plugin approval: {error}"))?;
+        if changed == 0 {
+            return Err("analyzer plugin was not found".to_owned());
+        }
+        Ok(())
+    }
+
+    pub fn set_analyzer_plugin_enabled(
+        &self,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        let changed = connection.execute("UPDATE analyzer_plugins SET enabled = ?1, updated_at_unix_ms = ?2 WHERE plugin_id = ?3 AND (trust_state = 'user_approved' OR ?1 = 0)", params![enabled as i64, current_time_unix_ms()?, plugin_id])
+            .map_err(|error| format!("failed to update analyzer plugin activation: {error}"))?;
+        if changed == 0 {
+            return Err("analyzer plugin was not found or has not been approved".to_owned());
+        }
+        Ok(())
+    }
+
+    pub fn load_enabled_analyzer_plugin(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Option<StoredAnalyzerPlugin>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        let row = connection.query_row("SELECT manifest_json, wasm_module, trust_state, enabled FROM analyzer_plugins WHERE plugin_id = ?1 AND trust_state = 'user_approved' AND enabled = 1", [plugin_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)? != 0)))
+            .optional().map_err(|error| format!("failed to load enabled analyzer plugin: {error}"))?;
+        row.map(|(manifest_json, wasm_module, trust_value, enabled)| {
+            let manifest = serde_json::from_str(&manifest_json)
+                .map_err(|error| format!("stored analyzer plugin manifest is invalid: {error}"))?;
+            let trust = analyzer_plugin_trust_from_db(&trust_value)?;
+            Ok(StoredAnalyzerPlugin {
+                manifest,
+                wasm_module,
+                trust,
+                enabled,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn remove_analyzer_plugin(&self, plugin_id: &str) -> Result<bool, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        connection
+            .execute(
+                "DELETE FROM analyzer_plugins WHERE plugin_id = ?1",
+                [plugin_id],
+            )
+            .map(|count| count > 0)
+            .map_err(|error| format!("failed to remove analyzer plugin: {error}"))
+    }
     pub fn update_fix_task_workspace(
         &self,
         root_path: &str,
@@ -1344,6 +1474,7 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
             }
             9 => transaction.execute_batch(FIX_TASK_GIT_WORKTREE_MIGRATION)?,
             10 => transaction.execute_batch(FIX_TASK_READINESS_MIGRATION)?,
+            11 => transaction.execute_batch(ANALYZER_PLUGIN_MIGRATION)?,
             _ => return Err(rusqlite::Error::InvalidQuery),
         }
         transaction.pragma_update(None, "user_version", next_version)?;
@@ -1352,6 +1483,15 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
     }
 
     Ok(())
+}
+
+fn analyzer_plugin_trust_from_db(value: &str) -> Result<AnalyzerPluginTrust, String> {
+    match value {
+        "awaiting_approval" => Ok(AnalyzerPluginTrust::AwaitingApproval),
+        "user_approved" => Ok(AnalyzerPluginTrust::UserApproved),
+        "rejected" => Ok(AnalyzerPluginTrust::Rejected),
+        _ => Err("stored analyzer plugin has an unknown trust state".to_owned()),
+    }
 }
 
 #[cfg(test)]
@@ -1812,5 +1952,70 @@ mod tests {
 
         drop(database);
         std::fs::remove_dir_all(data_dir).expect("temporary database directory should be removed");
+    }
+
+    #[test]
+    fn analyzer_plugin_requires_separate_approval_and_activation() {
+        let data_dir = temporary_database_dir();
+        let database = ProjectDatabase::open(data_dir.clone()).expect("database should initialize");
+        let manifest = AnalyzerPluginManifest {
+            id: "example.test".to_owned(),
+            name: "Example analyzer".to_owned(),
+            version: "1.0.0".to_owned(),
+            contract_version: 1,
+            language: crate::analyzer::SourceLanguage::Kotlin,
+            capabilities: vec!["symbols".to_owned()],
+            module_sha256: "0".repeat(64),
+        };
+
+        database
+            .install_analyzer_plugin(&manifest, b"module")
+            .unwrap();
+        let summaries = database.list_analyzer_plugins().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].trust, AnalyzerPluginTrust::AwaitingApproval);
+        assert!(!summaries[0].enabled);
+        assert!(
+            database
+                .set_analyzer_plugin_enabled("example.test", true)
+                .is_err()
+        );
+        assert!(
+            database
+                .load_enabled_analyzer_plugin("example.test")
+                .unwrap()
+                .is_none()
+        );
+
+        database
+            .approve_analyzer_plugin("example.test", true)
+            .unwrap();
+        assert!(
+            database
+                .load_enabled_analyzer_plugin("example.test")
+                .unwrap()
+                .is_none()
+        );
+        database
+            .set_analyzer_plugin_enabled("example.test", true)
+            .unwrap();
+        assert!(
+            database
+                .load_enabled_analyzer_plugin("example.test")
+                .unwrap()
+                .is_some()
+        );
+
+        database
+            .approve_analyzer_plugin("example.test", false)
+            .unwrap();
+        assert!(
+            database
+                .load_enabled_analyzer_plugin("example.test")
+                .unwrap()
+                .is_none()
+        );
+        drop(database);
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 }

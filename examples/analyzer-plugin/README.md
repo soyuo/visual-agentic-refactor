@@ -1,0 +1,3 @@
+This intentionally minimal WebAssembly Text module implements contract v1. It imports only `env.is_cancelled`, ignores input, and returns an empty partial Kotlin analysis, so it is only an ABI example and not a useful analyzer. The ABI is exercised by `run_plugin_executes_the_contract_v1_abi`; the cancellation import is covered by `run_plugin_reports_cooperative_cancellation` in `apps/desktop/src-tauri/src/analyzer_plugin.rs`.
+
+Compile it with WABT's `wat2wasm` for local experimentation. The desktop app does not invoke a compiler or run plugin build scripts; it accepts prebuilt `.wasm` bytes, checks the SHA-256 manifest digest, then stores the module pending explicit user approval.
