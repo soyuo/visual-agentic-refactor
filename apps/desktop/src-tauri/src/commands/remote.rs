@@ -209,6 +209,22 @@ pub fn execute_fix_task_remote_operation(
         .output()
         .map_err(|e| internal(e.to_string()))?;
     if !status.status.success() || !status.stdout.is_empty() {
+        let error = invalid("workspace must be clean immediately before remote execution");
+        task.orchestration.remote = Some(FixTaskRemoteOperation {
+            state: "failed".into(),
+            error: Some(error.message.clone()),
+            completed_at_unix_ms: Some(now()),
+            ..remote.clone()
+        });
+        persistence
+            .database()?
+            .update_fix_task_orchestration(
+                &request.project_path,
+                &request.task_id,
+                &task.orchestration,
+            )
+            .map_err(internal)?;
+        return Err(error);
         return Err(invalid("원격 작업 전 workspace가 깨끗해야 합니다"));
     }
     let branch = Command::new("git")
@@ -216,6 +232,22 @@ pub fn execute_fix_task_remote_operation(
         .output()
         .map_err(|e| internal(e.to_string()))?;
     if String::from_utf8_lossy(&branch.stdout).trim() != remote.branch {
+        let error = invalid("workspace branch changed after approval");
+        task.orchestration.remote = Some(FixTaskRemoteOperation {
+            state: "failed".into(),
+            error: Some(error.message.clone()),
+            completed_at_unix_ms: Some(now()),
+            ..remote.clone()
+        });
+        persistence
+            .database()?
+            .update_fix_task_orchestration(
+                &request.project_path,
+                &request.task_id,
+                &task.orchestration,
+            )
+            .map_err(internal)?;
+        return Err(error);
         return Err(invalid("승인된 브랜치와 현재 workspace 브랜치가 다릅니다"));
     }
     let head = Command::new("git")
@@ -225,6 +257,22 @@ pub fn execute_fix_task_remote_operation(
     if !head.status.success()
         || String::from_utf8_lossy(&head.stdout).trim() != remote.expected_base_commit
     {
+        let error = invalid("workspace HEAD changed after approval");
+        task.orchestration.remote = Some(FixTaskRemoteOperation {
+            state: "failed".into(),
+            error: Some(error.message.clone()),
+            completed_at_unix_ms: Some(now()),
+            ..remote.clone()
+        });
+        persistence
+            .database()?
+            .update_fix_task_orchestration(
+                &request.project_path,
+                &request.task_id,
+                &task.orchestration,
+            )
+            .map_err(internal)?;
+        return Err(error);
         return Err(invalid(
             "원격 작업 직전 workspace HEAD가 승인된 기준 커밋과 다릅니다",
         ));
@@ -284,6 +332,7 @@ pub fn execute_fix_task_remote_operation(
     if !output.status.success() {
         task.orchestration.remote = Some(FixTaskRemoteOperation {
             state: "failed".into(),
+            completed_at_unix_ms: Some(now()),
             error: Some(
                 String::from_utf8_lossy(&output.stderr)
                     .chars()
