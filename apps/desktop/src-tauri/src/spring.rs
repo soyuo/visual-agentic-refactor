@@ -459,7 +459,7 @@ fn analyzer(language: SourceLanguage) -> &'static dyn Analyzer {
     match language {
         SourceLanguage::Java => &JAVA,
         SourceLanguage::Kotlin => &KOTLIN,
-        SourceLanguage::JavaScript | SourceLanguage::TypeScript => &JAVA,
+        SourceLanguage::JavaScript | SourceLanguage::TypeScript | SourceLanguage::Python => &JAVA,
     }
 }
 
@@ -999,7 +999,9 @@ fn parameter_metadata(parameter: &str, language: SourceLanguage) -> Option<Value
             let type_name = extract_trailing_type(&parameter[..name_start])?;
             (name, type_name)
         }
-        SourceLanguage::JavaScript | SourceLanguage::TypeScript => return None,
+        SourceLanguage::JavaScript | SourceLanguage::TypeScript | SourceLanguage::Python => {
+            return None;
+        }
     };
     let binding = [
         "RequestBody",
@@ -1036,7 +1038,7 @@ fn method_return_type(
             let name_start = declaration[..open].rfind(method_name)?;
             extract_trailing_type(&declaration[..name_start])
         }
-        SourceLanguage::JavaScript | SourceLanguage::TypeScript => None,
+        SourceLanguage::JavaScript | SourceLanguage::TypeScript | SourceLanguage::Python => None,
     }
 }
 
@@ -1302,7 +1304,7 @@ fn parameter_type(parameter: &str, language: SourceLanguage) -> Option<String> {
             let name_start = parameter[..name_end].rfind(char::is_whitespace)?;
             extract_trailing_type(&parameter[..name_start])
         }
-        SourceLanguage::JavaScript | SourceLanguage::TypeScript => None,
+        SourceLanguage::JavaScript | SourceLanguage::TypeScript | SourceLanguage::Python => None,
     }
 }
 
@@ -1324,7 +1326,7 @@ fn declared_type(
             let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
             extract_trailing_type(&prefix[line_start..])
         }
-        SourceLanguage::JavaScript | SourceLanguage::TypeScript => None,
+        SourceLanguage::JavaScript | SourceLanguage::TypeScript | SourceLanguage::Python => None,
     }
 }
 

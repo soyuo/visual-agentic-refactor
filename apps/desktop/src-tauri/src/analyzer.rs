@@ -31,6 +31,8 @@ pub enum SourceLanguage {
     JavaScript,
     #[serde(rename = "typescript")]
     TypeScript,
+    #[serde(rename = "python")]
+    Python,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -252,6 +254,14 @@ impl AnalyzerRegistry {
         registry
             .register(Box::new(crate::javascript::TypeScriptAnalyzer))
             .expect("the TypeScript analyzer should register once");
+        registry
+    }
+
+    pub fn with_python() -> Self {
+        let mut registry = Self::default();
+        registry
+            .register(Box::new(crate::python::PythonAnalyzer))
+            .expect("the Python analyzer should register once");
         registry
     }
 
