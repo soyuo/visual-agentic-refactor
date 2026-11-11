@@ -11,6 +11,10 @@ use crate::persistence::ProjectDatabase;
 const MAX_SNAPSHOT_ID_CHARS: usize = 256;
 const MAX_NODE_ID_CHARS: usize = 512;
 const MAX_EDGE_ID_CHARS: usize = 512;
+const MAX_SNAPSHOT_NODES: usize = 100_000;
+const MAX_SNAPSHOT_EDGES: usize = 250_000;
+const MAX_SNAPSHOT_DIAGNOSTICS: usize = 50_000;
+const MAX_SNAPSHOT_SOURCE_HASHES: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -554,6 +558,30 @@ fn validate_snapshot(snapshot: &GraphSnapshotInput) -> Result<(), String> {
     if snapshot.analyzer_version.trim().is_empty() {
         return Err("Analyzer version must not be empty".to_owned());
     }
+    if snapshot.nodes.len() > MAX_SNAPSHOT_NODES {
+        return Err(format!(
+            "Graph snapshot exceeds the {} node limit",
+            MAX_SNAPSHOT_NODES
+        ));
+    }
+    if snapshot.edges.len() > MAX_SNAPSHOT_EDGES {
+        return Err(format!(
+            "Graph snapshot exceeds the {} edge limit",
+            MAX_SNAPSHOT_EDGES
+        ));
+    }
+    if snapshot.diagnostics.len() > MAX_SNAPSHOT_DIAGNOSTICS {
+        return Err(format!(
+            "Graph snapshot exceeds the {} diagnostic limit",
+            MAX_SNAPSHOT_DIAGNOSTICS
+        ));
+    }
+    if snapshot.source_hashes.len() > MAX_SNAPSHOT_SOURCE_HASHES {
+        return Err(format!(
+            "Graph snapshot exceeds the {} source hash limit",
+            MAX_SNAPSHOT_SOURCE_HASHES
+        ));
+    }
     let mut node_ids = std::collections::HashSet::with_capacity(snapshot.nodes.len());
     for node in &snapshot.nodes {
         validate_id(&node.node_id, MAX_NODE_ID_CHARS, "node")?;
@@ -763,6 +791,16 @@ mod tests {
                 source_evidence: Some(source_range()),
             }],
         }
+    }
+
+    #[test]
+    fn rejects_snapshots_over_node_limit_before_id_validation() {
+        let mut input = snapshot("oversized", "run");
+        input
+            .nodes
+            .resize(MAX_SNAPSHOT_NODES + 1, input.nodes[0].clone());
+        let error = validate_snapshot(&input).unwrap_err();
+        assert!(error.contains("100000 node limit"));
     }
 
     #[test]

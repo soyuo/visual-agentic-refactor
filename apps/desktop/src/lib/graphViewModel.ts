@@ -4,7 +4,6 @@ export type GraphViewKind = "architecture" | "api" | "dependencies" | "flow";
 
 export const MAX_VISIBLE_GRAPH_NODES = 60;
 export const MAX_VISIBLE_GRAPH_EDGES = 300;
-
 const edgeTypes: Record<GraphViewKind, ReadonlySet<GraphEdge["edgeType"]>> = {
   architecture: new Set(["contains", "declares", "inherits", "extends", "implements"]),
   api: new Set(["exposes", "usesDto"]),
@@ -35,7 +34,11 @@ export function buildGraphViewModel(
   snapshot: GraphSnapshot,
   view: GraphViewKind,
 ): GraphViewModel {
-  const candidates = snapshot.edges.filter((edge) => edgeTypes[view].has(edge.edgeType));
+  const candidates = [...new Map(
+    snapshot.edges
+      .filter((edge) => edgeTypes[view].has(edge.edgeType))
+      .map((edge) => [edge.edgeId, edge]),
+  ).values()];
   const relevantIds = new Set<string>();
   const syntheticNodes = new Map<string, GraphNode>();
 

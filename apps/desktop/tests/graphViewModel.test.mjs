@@ -108,6 +108,16 @@ test("graph view caps rendered edges and reports omitted relationships", () => {
   assert.equal(result.omittedEdgeCount, 5);
 });
 
+test("graph view removes duplicate edge IDs deterministically", () => {
+  const fixture = snapshot(
+    [node("source", "method", "loadItems"), node("target", "method", "findItems")],
+    [edge("same", "calls", "source", "target"), edge("same", "calls", "source", "target")],
+  );
+  const result = buildGraphViewModel(fixture, "flow");
+  assert.deepEqual(result.edges.map(({ edgeId }) => edgeId), ["same"]);
+  assert.equal(result.omittedEdgeCount, 0);
+});
+
 test("keyboard node navigation wraps in both directions", () => {
   const ids = ["first", "second", "third"];
   assert.equal(nextGraphNodeId(ids, "second", 1), "third");
