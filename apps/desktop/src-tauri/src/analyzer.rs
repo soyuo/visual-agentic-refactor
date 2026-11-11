@@ -27,6 +27,8 @@ pub struct SymbolId(pub String);
 pub enum SourceLanguage {
     Kotlin,
     Java,
+    JavaScript,
+    TypeScript,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -237,6 +239,14 @@ impl AnalyzerRegistry {
         registry
             .register(Box::new(crate::java::JavaAnalyzer))
             .expect("the default Java analyzer should register once");
+        registry
+    }
+
+    pub fn with_javascript_typescript() -> Self {
+        let mut registry = Self::default();
+        registry
+            .register(Box::new(crate::javascript::JavaScriptTypeScriptAnalyzer))
+            .expect("the JavaScript/TypeScript analyzer should register once");
         registry
     }
 
