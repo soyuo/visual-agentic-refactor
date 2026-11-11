@@ -281,6 +281,14 @@ Support OpenAI, Anthropic, local models, and compatible providers through a
 common adapter for calls, structured output, errors, usage, context limits, and
 retry policy.
 
+Provider authentication must remain explicit in the review UI: API-key
+credentials and subscription authentication are separate paths with separate
+consent and billing semantics. The MVP may use an official, documented browser
+authentication flow only. Claude Code subscription OAuth is not part of the MVP
+until Anthropic publishes a supported third-party desktop-app contract; the
+Anthropic path therefore uses its API key adapter and must not inspect, extract,
+or reuse Claude Code CLI tokens, cookies, or private endpoints.
+
 ## 12. Review Findings and State
 
 Finding fields: ID, project/snapshot IDs, selected scope, title, description,
