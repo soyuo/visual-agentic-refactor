@@ -379,4 +379,20 @@ mod tests {
         assert_eq!(restored.issued_client_id, credential.issued_client_id);
         assert_eq!(restored.refresh_token, credential.refresh_token);
     }
+
+    #[test]
+    fn subscription_status_serialization_does_not_expose_tokens() {
+        let status = OpenAiSubscriptionStatus {
+            connected: true,
+            inference_enabled: true,
+            account_email: Some("account@example.test".into()),
+        };
+        let serialized = serde_json::to_string(&status).expect("serialize public status");
+
+        assert!(serialized.contains("connected"));
+        assert!(serialized.contains("accountEmail"));
+        assert!(!serialized.contains("accessToken"));
+        assert!(!serialized.contains("refreshToken"));
+        assert!(!serialized.contains("idToken"));
+    }
 }
