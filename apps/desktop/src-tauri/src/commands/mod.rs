@@ -10,6 +10,7 @@ pub mod integration;
 pub mod project;
 pub mod readiness;
 pub mod recovery;
+pub mod remote;
 pub mod review_persistence;
 pub mod scanner;
 pub mod spring;
