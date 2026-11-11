@@ -9,7 +9,7 @@ use wasmi::{Caller, Config, Engine, Linker, Module, Store, StoreLimits, StoreLim
 
 use crate::analyzer::{
     AnalysisCompleteness, AnalysisOutput, AnalyzerError, AnalyzerErrorCode, AnalyzerInput,
-    Confidence, SourceLanguage,
+    Confidence, RelationshipKind, SourceLanguage,
 };
 
 pub const PLUGIN_CONTRACT_VERSION: u32 = 1;
@@ -356,12 +356,18 @@ fn validate_output(
             .iter()
             .any(|capability| capability == name)
     };
+    let relationship_is_declared = |kind: RelationshipKind| {
+        has_capability("relationships")
+            || (matches!(kind, RelationshipKind::Controls | RelationshipKind::Throws)
+                && has_capability("controlFlow"))
+            || (kind == RelationshipKind::AnnotatedBy && has_capability("annotations"))
+    };
     if (!has_capability("symbols") && !output.symbols.is_empty())
         || (!has_capability("imports") && !output.imports.is_empty())
-        || (!has_capability("relationships")
-            && !has_capability("controlFlow")
-            && !has_capability("annotations")
-            && !output.relationships.is_empty())
+        || output
+            .relationships
+            .iter()
+            .any(|relationship| !relationship_is_declared(relationship.kind))
     {
         return Err(plugin_error(
             AnalyzerErrorCode::InvalidInput,
@@ -386,6 +392,17 @@ fn validate_output(
                 "Plugin output has an empty or duplicate symbol id.",
             ));
         }
+    }
+    if output.symbols.iter().any(|symbol| {
+        symbol
+            .parent_id
+            .as_ref()
+            .is_some_and(|parent_id| !symbol_ids.iter().any(|id| *id == parent_id))
+    }) {
+        return Err(plugin_error(
+            AnalyzerErrorCode::InvalidInput,
+            "Plugin output contains a symbol with an unknown parent id.",
+        ));
     }
     for relationship in &output.relationships {
         if !symbol_ids.contains(&relationship.source_symbol_id)
@@ -550,5 +567,73 @@ mod tests {
         let mut manifest = fixture_manifest(&wasm);
         manifest.module_sha256 = "0".repeat(64);
         assert!(verify_package(&manifest, &wasm).is_err());
+    }
+    #[test]
+    fn output_rejects_relationships_outside_declared_capabilities() {
+        use crate::analyzer::{AnalyzerRelationship, SourceRange, SymbolId};
+
+        let wasm = b"wasm";
+        let mut manifest = fixture_manifest(wasm);
+        manifest.capabilities = vec!["annotations".into()];
+        let output = AnalysisOutput {
+            language: SourceLanguage::Kotlin,
+            completeness: AnalysisCompleteness::Partial,
+            symbols: vec![],
+            imports: vec![],
+            relationships: vec![AnalyzerRelationship {
+                kind: RelationshipKind::Calls,
+                source_symbol_id: SymbolId("source".into()),
+                target_symbol_id: None,
+                target_name: Some("target".into()),
+                location: SourceRange {
+                    relative_path: "src/Main.kt".into(),
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                },
+                confidence: Confidence::Confirmed,
+            }],
+            diagnostics: vec![],
+        };
+
+        let error = validate_output(&manifest, "src/Main.kt", "", &output).unwrap_err();
+        assert!(error.message.contains("not declared"));
+    }
+
+    #[test]
+    fn output_rejects_unknown_symbol_parent_ids() {
+        use crate::analyzer::{AnalyzerSymbol, SourceRange, SymbolId, SymbolKind};
+
+        let mut manifest = fixture_manifest(b"wasm");
+        manifest.capabilities = vec!["symbols".into()];
+        let output = AnalysisOutput {
+            language: SourceLanguage::Kotlin,
+            completeness: AnalysisCompleteness::Partial,
+            symbols: vec![AnalyzerSymbol {
+                id: SymbolId("child".into()),
+                name: "Child".into(),
+                kind: SymbolKind::Class,
+                parent_id: Some(SymbolId("missing-parent".into())),
+                location: SourceRange {
+                    relative_path: "src/Main.kt".into(),
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                },
+                confidence: Confidence::Confirmed,
+            }],
+            imports: vec![],
+            relationships: vec![],
+            diagnostics: vec![],
+        };
+
+        let error = validate_output(&manifest, "src/Main.kt", "", &output).unwrap_err();
+        assert!(error.message.contains("unknown parent id"));
     }
 }
