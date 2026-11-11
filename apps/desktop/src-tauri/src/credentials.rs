@@ -16,6 +16,8 @@ pub enum CredentialProvider {
     OpenAi,
     #[serde(rename = "anthropic")]
     Anthropic,
+    #[serde(rename = "github")]
+    GitHub,
 }
 
 impl CredentialProvider {
@@ -23,6 +25,7 @@ impl CredentialProvider {
         match self {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
+            Self::GitHub => "github",
         }
     }
 
@@ -30,6 +33,7 @@ impl CredentialProvider {
         match self {
             Self::OpenAi => "OpenAI",
             Self::Anthropic => "Anthropic",
+            Self::GitHub => "GitHub",
         }
     }
 }
@@ -265,16 +269,20 @@ pub fn delete(provider: CredentialProvider) -> Result<(), CommandError> {
 }
 
 pub fn statuses() -> Result<Vec<ProviderCredentialStatus>, CommandError> {
-    [CredentialProvider::OpenAi, CredentialProvider::Anthropic]
-        .into_iter()
-        .map(|provider| {
-            Ok(ProviderCredentialStatus {
-                provider,
-                display_name: provider.display_name(),
-                configured: is_configured(provider)?,
-            })
+    [
+        CredentialProvider::OpenAi,
+        CredentialProvider::Anthropic,
+        CredentialProvider::GitHub,
+    ]
+    .into_iter()
+    .map(|provider| {
+        Ok(ProviderCredentialStatus {
+            provider,
+            display_name: provider.display_name(),
+            configured: is_configured(provider)?,
         })
-        .collect()
+    })
+    .collect()
 }
 
 #[cfg(test)]

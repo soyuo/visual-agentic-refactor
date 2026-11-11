@@ -92,6 +92,9 @@ pub async fn run_ai_review(
     let root = canonical_project_path(&request.project_path)?;
     let model = validated_model_id(&request.model)?;
     let request_id = validated_request_id(&request.request_id)?;
+    if request.provider == CredentialProvider::GitHub {
+        return Err(invalid("GitHub는 리뷰 제공자로 사용할 수 없습니다."));
+    }
 
     let (context, max_context_tokens) = preview_state
         .consume_approved_context(
@@ -121,6 +124,7 @@ pub async fn run_ai_review(
         CredentialProvider::Anthropic => {
             Box::new(AnthropicProvider::from_keyring().map_err(provider_error)?)
         }
+        CredentialProvider::GitHub => unreachable!("validated above"),
     };
     let task = app_state.register_task()?;
     app.emit(
