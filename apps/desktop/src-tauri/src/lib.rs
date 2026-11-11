@@ -14,6 +14,7 @@ pub mod kotlin;
 pub mod openai_provider;
 pub mod persistence;
 pub mod project_detection;
+pub mod python;
 pub mod review_finding;
 pub mod scanner;
 pub mod spring;

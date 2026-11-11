@@ -48,7 +48,7 @@ export interface OpenProjectResponse {
   persistenceError: string | null;
 }
 
-export type SourceLanguage = "kotlin" | "java" | "javascript" | "typescript";
+export type SourceLanguage = "kotlin" | "java" | "javascript" | "typescript" | "python";
 export type Confidence = "confirmed" | "inferred" | "unknown";
 export type GraphCompleteness = "complete" | "partial";
 export type GraphDiagnosticSeverity = "info" | "warning" | "error";
@@ -433,6 +433,7 @@ export interface DetectionResult {
 export interface ProjectDetection {
   kotlin: DetectionResult;
   java: DetectionResult;
+  python: DetectionResult;
   springBoot: DetectionResult;
   gradle: DetectionResult;
 }

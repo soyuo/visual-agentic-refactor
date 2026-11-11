@@ -13,6 +13,7 @@ const MAX_DETECTION_EVIDENCE: usize = 20;
 pub struct ProjectDetection {
     pub kotlin: DetectionResult,
     pub java: DetectionResult,
+    pub python: DetectionResult,
     pub spring_boot: DetectionResult,
     pub gradle: DetectionResult,
 }
@@ -44,12 +45,14 @@ pub struct DetectionEvidence {
 pub fn detect_project(root: &Path, entries: &[ScanEntry]) -> ProjectDetection {
     let kotlin = detect_language(entries, "kt", "Kotlin 소스 파일 확장자");
     let java = detect_language(entries, "java", "Java 소스 파일 확장자");
+    let python = detect_language(entries, "py", "Python 소스 파일 확장자");
     let gradle = detect_gradle(entries);
     let spring_boot = detect_spring_boot(root, entries);
 
     ProjectDetection {
         kotlin,
         java,
+        python,
         spring_boot,
         gradle,
     }
