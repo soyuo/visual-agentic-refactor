@@ -229,34 +229,57 @@ pub fn execute_fix_task_remote_operation(
             "원격 작업 직전 workspace HEAD가 승인된 기준 커밋과 다릅니다",
         ));
     }
-    let output = if remote.action == "push" {
-        Command::new("git")
-            .args(["-C", &workspace, "push", "origin", &remote.branch])
-            .output()
-            .map_err(|e| internal(e.to_string()))?
-    } else {
-        let title = remote
-            .title
-            .as_deref()
-            .ok_or_else(|| invalid("PR 제목이 없습니다"))?;
-        let body = remote
-            .body
-            .as_deref()
-            .ok_or_else(|| invalid("PR 본문이 없습니다"))?;
-        Command::new("gh")
-            .args([
-                "pr",
-                "create",
-                "--head",
-                &remote.branch,
-                "--title",
-                title,
-                "--body",
-                body,
-            ])
-            .current_dir(&workspace)
-            .output()
-            .map_err(|e| internal(e.to_string()))?
+    let execution_result: Result<std::process::Output, CommandError> = (|| {
+        let output = if remote.action == "push" {
+            Command::new("git")
+                .args(["-C", &workspace, "push", "origin", &remote.branch])
+                .output()
+                .map_err(|e| internal(e.to_string()))?
+        } else {
+            let title = remote
+                .title
+                .as_deref()
+                .ok_or_else(|| invalid("PR 제목이 없습니다"))?;
+            let body = remote
+                .body
+                .as_deref()
+                .ok_or_else(|| invalid("PR 본문이 없습니다"))?;
+            Command::new("gh")
+                .args([
+                    "pr",
+                    "create",
+                    "--head",
+                    &remote.branch,
+                    "--title",
+                    title,
+                    "--body",
+                    body,
+                ])
+                .current_dir(&workspace)
+                .output()
+                .map_err(|e| internal(e.to_string()))?
+        };
+        Ok(output)
+    })();
+    let output = match execution_result {
+        Ok(output) => output,
+        Err(error) => {
+            task.orchestration.remote = Some(FixTaskRemoteOperation {
+                state: "failed".into(),
+                error: Some(error.message.clone()),
+                completed_at_unix_ms: Some(now()),
+                ..remote
+            });
+            persistence
+                .database()?
+                .update_fix_task_orchestration(
+                    &request.project_path,
+                    &request.task_id,
+                    &task.orchestration,
+                )
+                .map_err(internal)?;
+            return Err(error);
+        }
     };
     if !output.status.success() {
         task.orchestration.remote = Some(FixTaskRemoteOperation {
