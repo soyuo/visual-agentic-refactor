@@ -24,6 +24,9 @@ export interface AppInfoResponse {
 }
 
 export type CredentialProvider = "openai" | "anthropic";
+export type LocalRuntimeKind = "llamaCpp" | "ollama";
+export interface LocalLlmRequest { runtime: LocalRuntimeKind; executablePath: string; modelPath: string; prompt: string; timeoutMs?: number; args?: string[]; }
+export interface LocalLlmResponse { text: string; structured: unknown; }
 
 export interface ProviderCredentialStatus {
   provider: CredentialProvider;
@@ -611,6 +614,11 @@ export async function runAiReview(request: RunAiReviewRequest): Promise<AiReview
   } catch (error) {
     throw toAppCommandError(error);
   }
+}
+
+export async function runLocalLlm(request: LocalLlmRequest): Promise<LocalLlmResponse> {
+  try { return await invoke<LocalLlmResponse>("run_local_llm", { request }); }
+  catch (error) { throw toAppCommandError(error); }
 }
 
 export async function validateReviewFindings(
