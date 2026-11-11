@@ -77,6 +77,7 @@ pub fn run() {
             commands::project::get_last_project,
             commands::graph::save_graph_snapshot,
             commands::graph::list_graph_snapshots,
+            commands::graph::compare_graph_snapshot,
             commands::graph::get_graph_snapshot,
             commands::spring::analyze_spring_project,
             commands::scanner::scan_project,

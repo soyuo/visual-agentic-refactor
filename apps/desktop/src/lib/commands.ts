@@ -156,6 +156,27 @@ export interface GraphSnapshot extends GraphSnapshotSummary {
   diagnostics: GraphDiagnostic[];
 }
 
+export interface IncrementalAnalysisPlan {
+  reusableSnapshotId: string | null;
+  reusable: boolean;
+  changedPaths: string[];
+  unchangedPaths: string[];
+  addedPaths: string[];
+  removedPaths: string[];
+  reason: string | null;
+}
+
+export interface CompareGraphSnapshotRequest {
+  projectPath: string;
+  analyzerVersion: string;
+  sourceHashes: Record<string, string>;
+  settings: unknown;
+}
+
+export async function compareGraphSnapshot(request: CompareGraphSnapshotRequest): Promise<IncrementalAnalysisPlan> {
+  return invoke<IncrementalAnalysisPlan>("compare_graph_snapshot", { request });
+}
+
 export type ReviewContextScope =
   | { file: { relativePath: string; range: SourceRange | null } }
   | { graphNode: { nodeId: string } };
