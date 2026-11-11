@@ -1,4 +1,5 @@
 pub mod ai_review;
+pub mod analyzer_plugins;
 pub mod app;
 pub mod context;
 pub mod credentials;
