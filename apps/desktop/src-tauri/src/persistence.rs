@@ -1208,6 +1208,38 @@ impl ProjectDatabase {
             .ok_or_else(|| "수정 작업을 다시 불러오지 못했습니다.".to_owned())
     }
 
+    pub fn claim_fix_task_remote_execution(
+        &self,
+        root_path: &str,
+        task_id: &str,
+        expected: &FixTaskOrchestration,
+        claimed: &FixTaskOrchestration,
+    ) -> Result<bool, String> {
+        let expected_json = serde_json::to_string(expected)
+            .map_err(|error| format!("원격 작업 상태를 직렬화하지 못했습니다: {error}"))?;
+        let claimed_json = serde_json::to_string(claimed)
+            .map_err(|error| format!("원격 작업 claim을 직렬화하지 못했습니다: {error}"))?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "로컬 데이터베이스 잠금에 실패했습니다.".to_owned())?;
+        let updated = connection
+            .execute(
+                "UPDATE fix_tasks SET orchestration_json = ?1, updated_at_unix_ms = ?2
+                 WHERE task_id = ?3 AND project_id = (SELECT id FROM projects WHERE root_path = ?4)
+                   AND orchestration_json = ?5",
+                params![
+                    claimed_json,
+                    current_time_unix_ms()?,
+                    task_id,
+                    root_path,
+                    expected_json
+                ],
+            )
+            .map_err(|error| format!("원격 작업 claim을 저장하지 못했습니다: {error}"))?;
+        Ok(updated == 1)
+    }
+
     pub fn save_fix_verification(
         &self,
         root_path: &str,

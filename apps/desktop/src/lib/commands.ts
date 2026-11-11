@@ -322,7 +322,7 @@ export interface StoredFixTask {
   patchPlan: { intent: string; files: string[] } | null;
   beforePaths: string[];
   afterPaths: string[];
-  orchestration: { state: FixTaskOrchestrationState; retryCount: number; maxRetries: number; retryReason: string | null; failureLog: string | null; recovery: { state: string; beforeSha: string; lastGoodSha: string; finalSha: string | null; changedFiles: string[]; diffSummary: string; verification: StoredFixTask["verification"]; errorKind: string | null; error: string | null; updatedAtUnixMs: number } | null; remote: { action: "push" | "pull_request"; state: string; expectedBaseCommit: string; branch: string; approvedAtUnixMs: number | null; completedAtUnixMs: number | null; resultUrl: string | null; error: string | null } | null };
+  orchestration: { state: FixTaskOrchestrationState; retryCount: number; maxRetries: number; retryReason: string | null; failureLog: string | null; recovery: { state: string; beforeSha: string; lastGoodSha: string; finalSha: string | null; changedFiles: string[]; diffSummary: string; verification: StoredFixTask["verification"]; errorKind: string | null; error: string | null; updatedAtUnixMs: number } | null; remote: { action: "push" | "pull_request"; state: string; expectedBaseCommit: string; branch: string; title: string | null; body: string | null; approvedAtUnixMs: number | null; completedAtUnixMs: number | null; resultUrl: string | null; error: string | null } | null };
   verification: { policy: FixVerificationPolicy; results: VerificationResult[] } | null;
   readiness: { state: "blocked" | "ready" | "approved"; findingId: string; changedFiles: string[]; verification: StoredFixTask["verification"]; baseCommit: string | null; approverAction: string | null; approvedAtUnixMs: number | null; evaluatedAtUnixMs: number; reason: string | null } | null;
 }
@@ -712,10 +712,12 @@ export async function updateFixTaskOrchestration(
 export interface RemoteApprovalRequest { projectPath: string; taskId: string; action: "push" | "pull_request"; expectedBaseCommit: string; branch: string; title?: string; body?: string; }
 export interface RemoteExecuteRequest { projectPath: string; taskId: string; }
 export async function approveFixTaskRemoteOperation(request: RemoteApprovalRequest): Promise<StoredFixTask> {
-  return invoke<StoredFixTask>("approve_fix_task_remote_operation", { request });
+  try { return await invoke<StoredFixTask>("approve_fix_task_remote_operation", { request }); }
+  catch (error) { throw toAppCommandError(error); }
 }
 export async function executeFixTaskRemoteOperation(request: RemoteExecuteRequest): Promise<StoredFixTask> {
-  return invoke<StoredFixTask>("execute_fix_task_remote_operation", { request });
+  try { return await invoke<StoredFixTask>("execute_fix_task_remote_operation", { request }); }
+  catch (error) { throw toAppCommandError(error); }
 }
 
 export async function prepareFixTaskWorkspace(projectPath: string, taskId: string): Promise<StoredFixTask> {

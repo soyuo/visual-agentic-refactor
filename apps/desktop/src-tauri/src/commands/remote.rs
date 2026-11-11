@@ -154,6 +154,52 @@ pub fn execute_fix_task_remote_operation(
     if task.base_commit.as_deref() != Some(remote.expected_base_commit.as_str()) {
         return Err(invalid("기준 커밋이 변경되었습니다"));
     }
+    let workspace_for_head = task
+        .workspace_path
+        .clone()
+        .ok_or_else(|| invalid("workspace missing"))?;
+    let head = Command::new("git")
+        .args(["-C", &workspace_for_head, "rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| internal(e.to_string()))?;
+    if !head.status.success()
+        || String::from_utf8_lossy(&head.stdout).trim() != remote.expected_base_commit
+    {
+        return Err(invalid(
+            "원격 작업 전 workspace HEAD가 승인된 기준 커밋과 다릅니다",
+        ));
+    }
+    let preflight_status = Command::new("git")
+        .args(["-C", &workspace_for_head, "status", "--porcelain"])
+        .output()
+        .map_err(|e| internal(e.to_string()))?;
+    if !preflight_status.status.success() || !preflight_status.stdout.is_empty() {
+        return Err(invalid("workspace is dirty"));
+    }
+    let preflight_branch = Command::new("git")
+        .args(["-C", &workspace_for_head, "branch", "--show-current"])
+        .output()
+        .map_err(|e| internal(e.to_string()))?;
+    if String::from_utf8_lossy(&preflight_branch.stdout).trim() != remote.branch {
+        return Err(invalid("workspace branch mismatch"));
+    }
+    let mut claimed = task.orchestration.clone();
+    if let Some(claimed_remote) = claimed.remote.as_mut() {
+        claimed_remote.state = "executing".into();
+    }
+    if !persistence
+        .database()?
+        .claim_fix_task_remote_execution(
+            &request.project_path,
+            &request.task_id,
+            &task.orchestration,
+            &claimed,
+        )
+        .map_err(internal)?
+    {
+        return Err(invalid("원격 작업이 이미 실행 중이거나 완료되었습니다"));
+    }
+    task.orchestration = claimed;
     let workspace = task
         .workspace_path
         .clone()
@@ -171,6 +217,17 @@ pub fn execute_fix_task_remote_operation(
         .map_err(|e| internal(e.to_string()))?;
     if String::from_utf8_lossy(&branch.stdout).trim() != remote.branch {
         return Err(invalid("승인된 브랜치와 현재 workspace 브랜치가 다릅니다"));
+    }
+    let head = Command::new("git")
+        .args(["-C", &workspace, "rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| internal(e.to_string()))?;
+    if !head.status.success()
+        || String::from_utf8_lossy(&head.stdout).trim() != remote.expected_base_commit
+    {
+        return Err(invalid(
+            "원격 작업 직전 workspace HEAD가 승인된 기준 커밋과 다릅니다",
+        ));
     }
     let output = if remote.action == "push" {
         Command::new("git")
@@ -213,9 +270,15 @@ pub fn execute_fix_task_remote_operation(
             ..remote
         });
     } else {
+        let result_url = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .rev()
+            .find(|line| line.trim().starts_with("http://") || line.trim().starts_with("https://"))
+            .map(|line| line.trim().to_owned());
         task.orchestration.remote = Some(FixTaskRemoteOperation {
             state: "completed".into(),
             completed_at_unix_ms: Some(now()),
+            result_url,
             ..remote
         });
     }
