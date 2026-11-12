@@ -31,6 +31,7 @@ import {
   toAppCommandError,
   type CredentialProvider,
   type AiReviewTaskStartedEvent,
+  type GraphNode,
   type GraphSnapshot,
   type ProviderCredentialStatus,
   type OpenProjectResponse,
@@ -64,6 +65,8 @@ interface AiReviewWorkspaceProps {
   selectedEntry: ScanEntry | null;
   graphSnapshot: GraphSnapshot | null;
   selectedGraphNodeId: string | null;
+  /** Nodes picked as a diagram area; empty means the single selected node. */
+  reviewAreaNodeIds: string[];
 }
 
 function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
@@ -79,7 +82,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [consentDialogOpen, setConsentDialogOpen] = createSignal(false);
   const [consentDecision, setConsentDecision] = createSignal<"approved" | "rejected" | "cancelled" | null>(null);
   const [consentScopeKey, setConsentScopeKey] = createSignal("");
-  const [scopeKind, setScopeKind] = createSignal<"file" | "graphNode">(props.selectedGraphNodeId ? "graphNode" : "file");
+  const [scopeKind, setScopeKind] = createSignal<"file" | "graphNode">(props.selectedGraphNodeId || props.reviewAreaNodeIds.length ? "graphNode" : "file");
   const [contextPreview, setContextPreview] = createSignal<ReviewContextPreview | null>(null);
   const [previewLoading, setPreviewLoading] = createSignal(false);
   const [previewError, setPreviewError] = createSignal<string | null>(null);
@@ -132,22 +135,28 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         if (version === modelRequestVersion) setModelOptions([]);
       });
   });
-  const selectedGraphNode = () => props.graphSnapshot?.nodes.find((node) => node.nodeId === props.selectedGraphNodeId) ?? null;
-  const graphNodePath = () => {
-    const node = selectedGraphNode();
+  const reviewableNodePath = (node: GraphNode | null | undefined) => {
     const path = node?.filePath ?? node?.sourceEvidence?.relativePath ?? null;
     return path && /\.(java|kt|kts)$/i.test(path) && !isSensitiveTransferPath(path) ? path : null;
   };
+  const areaNodes = () => props.reviewAreaNodeIds
+    .map((id) => props.graphSnapshot?.nodes.find((node) => node.nodeId === id))
+    .filter((node): node is GraphNode => Boolean(node));
+  // The primary node anchors the review; prefer one with reviewable source.
+  const selectedGraphNode = () => areaNodes().find((node) => reviewableNodePath(node))
+    ?? props.graphSnapshot?.nodes.find((node) => node.nodeId === props.selectedGraphNodeId) ?? null;
+  const extraAreaNodeIds = () => areaNodes().map((node) => node.nodeId).filter((id) => id !== selectedGraphNode()?.nodeId);
+  const graphNodePath = () => reviewableNodePath(selectedGraphNode());
   const currentScope = (): ReviewContextScope | null => {
     if (scopeKind() === "graphNode") {
       const node = selectedGraphNode();
-      return node && graphNodePath() ? { graphNode: { nodeId: node.nodeId } } : null;
+      return node && graphNodePath() ? { graphNode: { nodeId: node.nodeId, extraNodeIds: extraAreaNodeIds() } } : null;
     }
     const file = selectedFile();
     return file ? { file: { relativePath: file.relativePath, range: null } } : null;
   };
   const scopeLabel = () => scopeKind() === "graphNode"
-    ? selectedGraphNode()?.qualifiedName ?? selectedGraphNode()?.name ?? graphNodePath()
+    ? `${selectedGraphNode()?.qualifiedName ?? selectedGraphNode()?.name ?? graphNodePath()}${extraAreaNodeIds().length ? ` 외 ${extraAreaNodeIds().length}개 (선택 영역)` : ""}`
     : selectedFile()?.relativePath;
   const reviewSelection = (): ReviewFindingSelection | null => {
     const scope = currentScope();
@@ -170,6 +179,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     scopeKind(),
     selectedFile()?.relativePath ?? "",
     props.selectedGraphNodeId ?? "",
+    props.reviewAreaNodeIds.join(","),
     props.graphSnapshot?.snapshotId ?? "",
   ]);
 

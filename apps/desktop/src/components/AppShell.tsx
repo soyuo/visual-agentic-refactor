@@ -133,6 +133,7 @@ function AppShell(props: AppShellProps) {
   };
   const activeLabel = () => navigationItems.find((item) => item.id === activeView())?.label ?? "";
   const [selectedGraphNodeId, setSelectedGraphNodeId] = createSignal<string | null>(null);
+  const [reviewAreaNodeIds, setReviewAreaNodeIds] = createSignal<string[]>([]);
   const detectionRows = () => {
     const detection = props.scanResult?.projectDetection;
     if (!detection) return [];
@@ -231,9 +232,10 @@ function AppShell(props: AppShellProps) {
             error={props.graphError}
             projectAvailable={props.project !== null}
             onAnalyze={props.onAnalyzeGraph}
-            onSelectionChanged={setSelectedGraphNodeId}
-            onRequestReview={(nodeId) => {
-              setSelectedGraphNodeId(nodeId);
+            onSelectionChanged={(nodeId) => { setSelectedGraphNodeId(nodeId); setReviewAreaNodeIds([]); }}
+            onRequestReview={(nodeIds) => {
+              setSelectedGraphNodeId(nodeIds[0] ?? null);
+              setReviewAreaNodeIds(nodeIds);
               navigate("review");
             }}
             onGenerateAiDiagram={props.onGenerateAiDiagram}
@@ -264,6 +266,7 @@ function AppShell(props: AppShellProps) {
             selectedEntry={props.selectedEntry}
             graphSnapshot={props.graphSnapshot}
             selectedGraphNodeId={selectedGraphNodeId()}
+            reviewAreaNodeIds={reviewAreaNodeIds()}
           />
         ) : activeView() === "fixes" ? (
           <AiReviewWorkspace
@@ -273,6 +276,7 @@ function AppShell(props: AppShellProps) {
             selectedEntry={props.selectedEntry}
             graphSnapshot={props.graphSnapshot}
             selectedGraphNodeId={selectedGraphNodeId()}
+            reviewAreaNodeIds={reviewAreaNodeIds()}
           />
         ) : activeView() === "pulls" ? (
           <PullRequestWorkspace project={props.project} />

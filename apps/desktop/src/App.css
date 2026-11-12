@@ -1472,3 +1472,11 @@ summary:focus-visible {
 .source-line.highlighted { background: var(--vr-blue-50); box-shadow: inset 3px 0 0 var(--vr-blue-500); }
 .source-line-number { flex: 0 0 48px; padding-right: 12px; color: var(--vr-grey-500); text-align: right; user-select: none; }
 .source-line-text { padding-right: 16px; white-space: pre; color: var(--vr-grey-900); }
+
+/* Review area selection in graph and AI diagram */
+.graph-area-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; padding: 10px 14px; border: 1px solid var(--vr-blue-100); border-radius: var(--vr-radius-md); background: var(--vr-blue-50); color: var(--vr-grey-800); font-size: 12px; }
+.graph-area-bar span { flex: 1; }
+.graph-area-bar strong { color: var(--vr-blue-700); }
+.graph-area-box { position: fixed; z-index: 40; border: 1.5px dashed var(--vr-blue-500); background: rgb(49 130 246 / 8%); pointer-events: none; }
+.graph-ai-node { cursor: pointer; }
+.graph-node.in-area rect { stroke: var(--vr-blue-500); stroke-width: 2.5; fill: var(--vr-blue-50); }

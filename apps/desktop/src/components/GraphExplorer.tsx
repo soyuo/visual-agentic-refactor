@@ -15,8 +15,8 @@ interface GraphExplorerProps {
   onAnalyze: () => void;
   onOpenSource: (relativePath: string, line: number | null) => void;
   onSelectionChanged: (nodeId: string | null) => void;
-  /** Opens AI review scoped to the selected node and its contained children. */
-  onRequestReview: (nodeId: string) => void;
+  /** Opens AI review scoped to the given nodes (an area) and their contained children. */
+  onRequestReview: (nodeIds: string[]) => void;
   onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<GeneratedGraphDiagram>;
   onLoadAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<GeneratedGraphDiagram | null>;
   onListAiModels: (provider: "openai" | "anthropic" | "claudeCode" | "codex") => Promise<AiModelOption[]>;
@@ -173,6 +173,11 @@ function GraphExplorer(props: GraphExplorerProps) {
   const [zoom, setZoom] = createSignal(1);
   const [offset, setOffset] = createSignal({ x: 0, y: 0 });
   const [dragOrigin, setDragOrigin] = createSignal<{ x: number; y: number } | null>(null);
+  // Review area: nodes the user picked by Shift+drag box or Ctrl+click.
+  const [area, setArea] = createSignal<string[]>([]);
+  const [areaBox, setAreaBox] = createSignal<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const inArea = (id: string) => area().includes(id);
+  const toggleArea = (id: string) => setArea((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
   const [aiProvider, setAiProvider] = createSignal<"openai" | "anthropic" | "claudeCode" | "codex">("codex");
   const [aiModel, setAiModel] = createSignal("");
   const [aiModels, setAiModels] = createSignal<AiModelOption[]>([]);
@@ -253,20 +258,54 @@ function GraphExplorer(props: GraphExplorerProps) {
   }
 
   function onPointerDown(event: PointerEvent) {
-    if ((event.target as Element).closest("[data-graph-node]")) return;
-    setDragOrigin({ x: event.clientX - offset().x, y: event.clientY - offset().y });
+    if ((event.target as Element).closest("[data-graph-node], [data-area-node]")) return;
     (event.currentTarget as SVGSVGElement).setPointerCapture(event.pointerId);
+    if (event.shiftKey) {
+      setAreaBox({ x0: event.clientX, y0: event.clientY, x1: event.clientX, y1: event.clientY });
+      return;
+    }
+    setDragOrigin({ x: event.clientX - offset().x, y: event.clientY - offset().y });
   }
 
   function onPointerMove(event: PointerEvent) {
+    const box = areaBox();
+    if (box) { setAreaBox({ ...box, x1: event.clientX, y1: event.clientY }); return; }
     const origin = dragOrigin();
     if (origin) setOffset({ x: event.clientX - origin.x, y: event.clientY - origin.y });
   }
+
+  function onPointerUp(event: PointerEvent) {
+    setDragOrigin(null);
+    const box = areaBox();
+    setAreaBox(null);
+    if (!box) return;
+    const left = Math.min(box.x0, box.x1), right = Math.max(box.x0, box.x1);
+    const top = Math.min(box.y0, box.y1), bottom = Math.max(box.y0, box.y1);
+    if (right - left < 4 && bottom - top < 4) return;
+    // Compare on-screen node centres with the box so zoom/pan need no math.
+    const picked = Array.from((event.currentTarget as SVGSVGElement).querySelectorAll<SVGGElement>("[data-area-node]"))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+        return cx >= left && cx <= right && cy >= top && cy <= bottom;
+      })
+      .map((element) => element.dataset.areaNode!);
+    setArea((ids) => [...new Set([...ids, ...picked])]);
+  }
+
+  const boxStyle = () => {
+    const box = areaBox();
+    return box ? {
+      left: `${Math.min(box.x0, box.x1)}px`, top: `${Math.min(box.y0, box.y1)}px`,
+      width: `${Math.abs(box.x1 - box.x0)}px`, height: `${Math.abs(box.y1 - box.y0)}px`,
+    } : undefined;
+  };
 
   async function generateAiDiagram() {
     if (!props.snapshot || !aiModel().trim() || aiBusy()) return;
     if (!window.confirm("analyzer 구조 메타데이터만 선택한 AI 제공자에게 전송해 계층형 구조도를 생성합니다. 소스 원문과 API 키는 전송하지 않습니다. 계속할까요?")) return;
     setAiBusy(true); setAiError(null);
+    setArea([]);
     try { setAiDiagram(await props.onGenerateAiDiagram(aiProvider(), aiModel().trim())); }
     catch (error) { setAiError(error instanceof Error ? error.message : String(error)); }
     finally { setAiBusy(false); }
@@ -341,7 +380,7 @@ function GraphExplorer(props: GraphExplorerProps) {
             <div class="graph-view-tabs" role="group" aria-label="그래프 종류">
               <For each={views}>{(item) => (
                 <button type="button" aria-pressed={view() === item.id} class="graph-view-tab"
-                  classList={{ selected: view() === item.id }} onClick={() => { setView(item.id); setSelectedId(""); }}>
+                  classList={{ selected: view() === item.id }} onClick={() => { setView(item.id); setSelectedId(""); setArea([]); }}>
                   {item.label}
                 </button>
               )}</For>
@@ -382,10 +421,18 @@ function GraphExplorer(props: GraphExplorerProps) {
               />
               <button class="secondary-button" type="button" disabled={aiBusy() || !aiModel()} onClick={() => void generateAiDiagram()}>{aiBusy() ? "AI 생성 중..." : "AI로 계층 구조도 생성"}</button>
             </div>
+            <Show when={area().length > 0}>
+              <div class="graph-area-bar" role="status">
+                <span><strong>선택 영역 {area().length}개</strong> 노드와 포함된 하위 코드를 함께 리뷰합니다.</span>
+                <button class="text-button" type="button" onClick={() => setArea([])}>선택 해제</button>
+                <button class="primary-button" type="button" onClick={() => props.onRequestReview(area())}>선택 영역 AI 리뷰</button>
+              </div>
+            </Show>
+            <Show when={areaBox()}><div class="graph-area-box" style={boxStyle()} aria-hidden="true" /></Show>
             <Show when={aiError()}><p class="project-error" role="alert">{aiError()}</p></Show>
             <Show when={aiDiagram()}>{(generated) => <section class="graph-ai-diagram" aria-label="AI 계층 구조도">
               <h2>{generated().diagram.title ?? "AI 계층 구조도"}</h2>
-              <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => setDragOrigin(null)} role="img" aria-label="AI가 생성한 계층형 구조도">
+              <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} role="img" aria-label="AI가 생성한 계층형 구조도">
                 <defs><marker id="ai-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="var(--vr-grey-500)" /></marker></defs>
                 <g transform={`translate(${offset().x} ${offset().y}) scale(${zoom()})`}>
                 <For each={generated().diagram.edges}>{(edge) => {
@@ -399,7 +446,8 @@ function GraphExplorer(props: GraphExplorerProps) {
                     <title>{edge.label}</title>
                   </g>;
                 }}</For>
-                <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node" transform={`translate(${position.x} ${position.y})`}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
+                <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node graph-ai-node" classList={{ "in-area": inArea(node.id) }} data-area-node={node.id} transform={`translate(${position.x} ${position.y})`}
+                  onClick={(event) => event.ctrlKey || event.metaKey || event.shiftKey ? toggleArea(node.id) : setArea(inArea(node.id) && area().length === 1 ? [] : [node.id])}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
                 </g>
               </svg>
             </section>}</Show>
@@ -413,7 +461,7 @@ function GraphExplorer(props: GraphExplorerProps) {
             <div class="graph-layout">
               <div class="graph-canvas-wrap">
                 <svg class="graph-canvas" viewBox="0 0 1000 600" role="group" aria-label={`${views.find((item) => item.id === view())?.label} 그래프`}
-                  onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => setDragOrigin(null)} onPointerCancel={() => setDragOrigin(null)}>
+                  onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => { setDragOrigin(null); setAreaBox(null); }}>
                   <g transform={`translate(${offset().x} ${offset().y}) translate(500 300) scale(${zoom()}) translate(-500 -300)`}>
                     <defs>
                       <marker id="graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
@@ -429,11 +477,11 @@ function GraphExplorer(props: GraphExplorerProps) {
                       </g> : null;
                     }}</For>
                     <For each={indexedNodes()}>{({ node, x, y }) => (
-                      <g data-graph-node="true" class={`graph-node ${node.confidence}`} classList={{ selected: selectedId() === node.nodeId }}
+                      <g data-graph-node="true" data-area-node={node.nodeId} class={`graph-node ${node.confidence}`} classList={{ selected: selectedId() === node.nodeId, "in-area": inArea(node.nodeId) }}
                         transform={`translate(${x} ${y})`} role="button" tabindex={selectedId() === node.nodeId || (!selectedId() && node === model()?.nodes[0]) ? 0 : -1}
                         aria-pressed={selectedId() === node.nodeId} aria-label={`${node.name}, ${node.nodeType}, ${confidenceLabel(node.confidence)}, ${sourceLabel(node)}`}
                         ref={(element) => nodeElements.set(node.nodeId, element)}
-                        onFocus={() => setSelectedId(node.nodeId)} onClick={() => setSelectedId(node.nodeId)} onKeyDown={(event) => handleNodeKeyDown(event, node)}>
+                        onFocus={() => setSelectedId(node.nodeId)} onClick={(event) => { if (event.ctrlKey || event.metaKey || event.shiftKey) toggleArea(node.nodeId); else setSelectedId(node.nodeId); }} onKeyDown={(event) => handleNodeKeyDown(event, node)}>
                         <rect x="-42" y="-22" width="84" height="44" rx="10" />
                         <text text-anchor="middle" y="4">{node.name.length > 13 ? `${node.name.slice(0, 12)}…` : node.name}</text>
                         <title>{node.name} · {node.nodeType} · {confidenceLabel(node.confidence)}</title>
@@ -441,7 +489,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                     )}</For>
                   </g>
                 </svg>
-                <p class="graph-canvas-hint">노드를 선택하세요. 배경을 끌어 이동하고 화살표 키로 노드를 탐색할 수 있습니다.</p>
+                <p class="graph-canvas-hint">노드를 선택하세요. 배경을 끌어 이동합니다. Shift+드래그나 Ctrl+클릭으로 리뷰할 영역을 고릅니다.</p>
                 <div class="graph-legend" aria-label="관계 신뢰도">
                   <span class="confirmed">확정</span><span class="inferred">추론</span><span class="unknown">미확인</span>
                 </div>
@@ -467,7 +515,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                         node().filePath ?? node().sourceEvidence!.relativePath,
                         node().sourceEvidence?.startLine ?? null,
                       )}>파일 위치 열기</button>
-                      <button class="primary-button" type="button" onClick={() => props.onRequestReview(node().nodeId)}>이 항목 AI 리뷰</button>
+                      <button class="primary-button" type="button" onClick={() => props.onRequestReview([node().nodeId])}>이 항목 AI 리뷰</button>
                     </Show>
                     <h3>연결 관계 ({selectedEdges().length})</h3>
                     <ul class="graph-relation-list">
