@@ -177,6 +177,7 @@ impl GraphSnapshotInput {
             target_key,
             &evidence.relative_path,
             evidence.start_byte,
+            evidence.end_byte,
         ))
         .map_err(|error| format!("Could not encode graph edge identity: {error}"))?;
         let edge_id = format!("edge:{identity}");
@@ -723,6 +724,40 @@ fn diagnostic_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphDiagnos
 mod tests {
     use super::*;
     use crate::persistence::StoredProject;
+
+    #[test]
+    fn stable_edge_id_distinguishes_nested_calls_with_the_same_start_byte() {
+        let outer = SourceRange {
+            relative_path: "src/ApiTokenService.kt".into(),
+            start_byte: 5062,
+            end_byte: 5240,
+            start_line: 100,
+            start_column: 8,
+            end_line: 108,
+            end_column: 20,
+        };
+        let inner = SourceRange {
+            end_byte: 5110,
+            ..outer.clone()
+        };
+
+        let outer_id = GraphSnapshotInput::stable_edge_id(
+            "method:createToken",
+            GraphEdgeType::Calls,
+            "JWT.create()",
+            &outer,
+        )
+        .unwrap();
+        let inner_id = GraphSnapshotInput::stable_edge_id(
+            "method:createToken",
+            GraphEdgeType::Calls,
+            "JWT.create()",
+            &inner,
+        )
+        .unwrap();
+
+        assert_ne!(outer_id, inner_id);
+    }
 
     fn database() -> (ProjectDatabase, std::path::PathBuf) {
         let nonce = SystemTime::now()
