@@ -217,7 +217,7 @@ fn parse_output(bytes: &[u8], model: &str) -> Result<ProviderResponse, ProviderE
             "Codex가 구조화된 결과를 반환하지 않았습니다.",
         )
     })?;
-    let structured_output = serde_json::from_str::<Value>(&text).map_err(|_| {
+    let structured_output = parse_json_text(&text).ok_or_else(|| {
         ProviderError::new(
             ProviderErrorCode::InvalidResponse,
             "Codex 응답 JSON을 해석할 수 없습니다.",
@@ -232,6 +232,30 @@ fn parse_output(bytes: &[u8], model: &str) -> Result<ProviderResponse, ProviderE
             output_tokens: None,
         },
     })
+}
+
+/// Parses the agent's JSON answer, tolerating Markdown fences and short
+/// prose around the object, which Codex sometimes adds.
+fn parse_json_text(text: &str) -> Option<Value> {
+    let trimmed = text.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Some(value);
+    }
+    let unfenced = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|rest| rest.trim_end().strip_suffix("```"))
+        .map(str::trim);
+    if let Some(inner) = unfenced
+        && let Ok(value) = serde_json::from_str::<Value>(inner)
+    {
+        return Some(value);
+    }
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    (start < end)
+        .then(|| serde_json::from_str::<Value>(&trimmed[start..=end]).ok())
+        .flatten()
 }
 
 fn find_agent_text(value: &Value) -> Option<String> {
@@ -266,6 +290,15 @@ fn cli_unavailable() -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_fenced_or_wrapped_agent_json() {
+        let fenced = parse_json_text("```json\n{\"findings\":[]}\n```").unwrap();
+        assert_eq!(fenced["findings"], serde_json::json!([]));
+        let wrapped = parse_json_text("결과입니다:\n{\"findings\":[]}\n끝").unwrap();
+        assert_eq!(wrapped["findings"], serde_json::json!([]));
+        assert!(parse_json_text("no json here").is_none());
+    }
 
     #[test]
     fn parses_agent_message_json_without_credentials() {
