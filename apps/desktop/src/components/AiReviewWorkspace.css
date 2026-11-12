@@ -119,16 +119,6 @@
   font-size: 12px;
 }
 
-.text-button {
-  border: 0;
-  background: transparent;
-  color: #53627b;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-}
-
 .danger-text {
   color: #b64b53;
 }
@@ -523,3 +513,29 @@
   .review-finding-heading,
   .finding-decision-row { align-items: flex-start; flex-direction: column; }
 }
+
+/* ---- Flow steps ---- */
+.flow-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; }
+.flow-steps li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; border: 1px solid var(--vr-grey-200); border-radius: 999px; background: #fff; color: var(--vr-grey-700); font-size: 11px; }
+.flow-steps li span { display: inline-grid; width: 18px; height: 18px; place-items: center; border-radius: 50%; background: var(--vr-blue-50); color: var(--vr-blue-700); font-size: 10px; font-weight: 700; }
+
+/* ---- Provider / model bar ---- */
+.review-setup-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.review-setup-field { display: grid; flex: 1 1 200px; gap: 4px; }
+.review-setup-field label { color: var(--vr-grey-600); font-size: 11px; font-weight: 600; }
+.review-setup-field select, .review-setup-field input { min-height: 34px; padding: 0 10px; border: 1px solid var(--vr-grey-300); border-radius: var(--vr-radius-md); background: #fff; font: inherit; font-size: 12px; }
+.status-chip { align-self: center; padding: 4px 10px; border-radius: 999px; background: var(--vr-orange-50); color: var(--vr-orange-700); font-size: 11px; font-weight: 650; }
+.status-chip.ok { background: var(--vr-green-50); color: var(--vr-green-700); }
+
+/* ---- Collapsible credentials ---- */
+.credential-details > summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; list-style: none; }
+.credential-details > summary::-webkit-details-marker { display: none; }
+.credential-details > summary::before { content: "\25B8"; color: var(--vr-grey-500); transition: transform 120ms ease; }
+.credential-details[open] > summary::before { transform: rotate(90deg); }
+.credential-details > summary span { color: var(--vr-grey-600); font-size: 11px; }
+.credential-details[open] > summary { margin-bottom: 12px; }
+
+/* ---- Empty hint with next actions ---- */
+.empty-hint { display: grid; gap: 8px; padding: 12px 14px; border: 1px dashed var(--vr-grey-300); border-radius: var(--vr-radius-md); background: var(--vr-grey-50); }
+.empty-hint p { margin: 0; color: var(--vr-grey-700); font-size: 12px; }
+.empty-hint div { display: flex; flex-wrap: wrap; gap: 8px; }
