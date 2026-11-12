@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::analyzer::SourceRange;
 use crate::knowledge_graph::{GraphEdge, GraphNode, GraphSnapshot};
 
-const MAX_CONTEXT_TOKENS: u32 = 32_000;
+const MAX_CONTEXT_TOKENS: u32 = 128_000;
 const MIN_CONTEXT_TOKENS: u32 = 128;
 const ESTIMATED_BYTES_PER_TOKEN: usize = 1;
 const CONTEXT_HEADER_BYTES: usize = 128;
@@ -200,6 +200,17 @@ pub fn build_review_context(inputs: ContextInputs<'_>) -> Result<ReviewContextPr
     let mut included_source_spans = Vec::new();
     let mut omitted_items = inputs.source_omissions.to_vec();
     let mut seen = HashSet::new();
+    // Small analyzer metadata (symbols, relations, language) goes before
+    // source bodies so large files cannot push the evidence out of budget.
+    // The selected source keeps its first place.
+    let mut sections = sections;
+    if sections.len() > 1 {
+        let rest = sections.split_off(1);
+        let (metadata, sources): (Vec<_>, Vec<_>) =
+            rest.into_iter().partition(|section| section.path.is_none());
+        sections.extend(metadata);
+        sections.extend(sources);
+    }
     for section in sections {
         if !seen.insert(section.key.clone()) {
             omitted_items.push(format!("중복 항목 생략: {}", section.title));

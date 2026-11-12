@@ -337,7 +337,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
       const preview = await previewReviewContext({
         projectPath: props.project.path,
         scope,
-        maxContextTokens: 32_000,
+        maxContextTokens: 128_000,
       });
       if (requestVersion === previewRequestVersion && requestScopeKey === scopeKey()) {
         setContextPreview(preview);
