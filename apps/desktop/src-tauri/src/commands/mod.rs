@@ -10,6 +10,7 @@ pub mod graph;
 pub mod graph_diagram;
 pub mod integration;
 pub mod local_runtime;
+pub mod models;
 pub mod project;
 pub mod readiness;
 pub mod recovery;

@@ -115,7 +115,13 @@ pub async fn generate_graph_diagram(
         .get("diagram")
         .cloned()
         .unwrap_or(response.structured_output);
-    validate_diagram(&diagram)?;
+    let allowed_node_ids = request
+        .snapshot
+        .nodes
+        .iter()
+        .map(|node| node.node_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    validate_diagram(&diagram, &allowed_node_ids)?;
     Ok(GeneratedGraphDiagram {
         diagram,
         provider_id: response.provider_id,
@@ -124,7 +130,10 @@ pub async fn generate_graph_diagram(
     })
 }
 
-fn validate_diagram(value: &Value) -> Result<(), CommandError> {
+fn validate_diagram(
+    value: &Value,
+    allowed_node_ids: &std::collections::BTreeSet<&str>,
+) -> Result<(), CommandError> {
     let nodes = value
         .get("nodes")
         .and_then(Value::as_array)
@@ -137,12 +146,26 @@ fn validate_diagram(value: &Value) -> Result<(), CommandError> {
         .iter()
         .filter_map(|node| node.get("id").and_then(Value::as_str))
         .collect::<std::collections::BTreeSet<_>>();
+    if nodes.iter().any(|node| {
+        node.get("id")
+            .and_then(Value::as_str)
+            .is_none_or(|id| !allowed_node_ids.contains(id))
+    }) {
+        return Err(invalid("AI가 분석 결과에 없는 노드를 생성했습니다."));
+    }
     if ids.len() != nodes.len()
         || nodes
             .iter()
             .any(|node| node.get("layer").and_then(Value::as_i64).is_none())
     {
         return Err(invalid("AI 구조도 node 형식이 올바르지 않습니다."));
+    }
+    let layers = nodes
+        .iter()
+        .filter_map(|node| node.get("layer").and_then(Value::as_i64))
+        .collect::<std::collections::BTreeSet<_>>();
+    if !edges.is_empty() && layers.len() < 2 {
+        return Err(invalid("AI가 계층을 만들지 못했습니다."));
     }
     if edges.iter().any(|edge| {
         edge.get("source")
@@ -154,6 +177,17 @@ fn validate_diagram(value: &Value) -> Result<(), CommandError> {
                 .and_then(Value::as_str)
                 .map(|id| !ids.contains(id))
                 .unwrap_or(true)
+            || edge.get("source").and_then(Value::as_str).is_some_and(|source| {
+                let source_layer = nodes.iter().find(|node| {
+                    node.get("id").and_then(Value::as_str) == Some(source)
+                }).and_then(|node| node.get("layer").and_then(Value::as_i64));
+                let target_layer = edge.get("target").and_then(Value::as_str).and_then(|target| {
+                    nodes.iter().find(|node| {
+                        node.get("id").and_then(Value::as_str) == Some(target)
+                    }).and_then(|node| node.get("layer").and_then(Value::as_i64))
+                });
+                matches!((source_layer, target_layer), (Some(source), Some(target)) if source >= target)
+            })
     }) {
         return Err(invalid("AI 구조도 edge가 존재하지 않는 node를 가리킵니다."));
     }
