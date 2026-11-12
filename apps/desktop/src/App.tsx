@@ -259,9 +259,13 @@ function App() {
     }
   }
 
+  /** Must match `ANALYZER_VERSION` in src-tauri/src/spring.rs. */
+  const CURRENT_ANALYZER_VERSION = "spring-static-v2";
+
   async function handleApiViewSelected() {
     const snapshot = await loadLatestGraph();
-    if (!snapshot || !snapshot.nodes.some((node) => node.nodeType === "apiEndpoint")) {
+    // Re-analyze when no endpoints exist or the snapshot came from an older analyzer.
+    if (!snapshot || snapshot.analyzerVersion !== CURRENT_ANALYZER_VERSION || !snapshot.nodes.some((node) => node.nodeType === "apiEndpoint")) {
       await handleAnalyzeGraph();
     }
   }

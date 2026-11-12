@@ -14,7 +14,7 @@ use crate::knowledge_graph::{
 };
 use crate::kotlin::KotlinAnalyzer;
 
-const ANALYZER_VERSION: &str = "spring-static-v1";
+const ANALYZER_VERSION: &str = "spring-static-v2";
 const MAX_SOURCE_FILES: usize = 10_000;
 const MAX_SOURCE_BYTES: usize = 5 * 1024 * 1024;
 
