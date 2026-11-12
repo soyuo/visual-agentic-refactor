@@ -535,6 +535,23 @@ fn related_source_paths(
         })
         .map(|node| node.node_id.as_str())
         .collect();
+    let mut seeds = seeds;
+    if selected_node_id.is_some() {
+        // Include every descendant reachable through containment edges so a
+        // selected module/package/class reviews its child code too.
+        let mut frontier: Vec<&str> = seeds.iter().copied().collect();
+        while let Some(parent) = frontier.pop() {
+            for edge in &graph.edges {
+                if edge.edge_type == crate::knowledge_graph::GraphEdgeType::Contains
+                    && edge.source_node_id == parent
+                    && let Some(child) = edge.target_node_id.as_deref()
+                    && seeds.insert(child)
+                {
+                    frontier.push(child);
+                }
+            }
+        }
+    }
     let mut ids = seeds.clone();
     for edge in &graph.edges {
         if seeds.contains(edge.source_node_id.as_str())
