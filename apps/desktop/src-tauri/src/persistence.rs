@@ -15,7 +15,7 @@ use crate::review_finding::{
 
 use crate::command_error::{CommandError, CommandErrorCode};
 
-const CURRENT_SCHEMA_VERSION: i64 = 10;
+const CURRENT_SCHEMA_VERSION: i64 = 11;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const GRAPH_MIGRATION: &str = include_str!("../migrations/0002_knowledge_graph.sql");
 const REVIEW_MIGRATION: &str = include_str!("../migrations/0003_review_persistence.sql");
@@ -34,6 +34,7 @@ const FIX_TASK_GIT_WORKTREE_MIGRATION: &str =
     include_str!("../migrations/0009_fix_task_git_worktree.sql");
 const FIX_TASK_READINESS_MIGRATION: &str =
     include_str!("../migrations/0010_fix_task_readiness.sql");
+const GRAPH_DIAGRAM_MIGRATION: &str = include_str!("../migrations/0011_graph_diagrams.sql");
 
 static NEXT_REVIEW_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -52,6 +53,15 @@ pub struct PersistenceState {
 pub struct StoredProject {
     pub path: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredGraphDiagram {
+    pub diagram: serde_json::Value,
+    pub provider_id: String,
+    pub model: String,
+    pub saved_at_unix_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -324,6 +334,68 @@ impl PersistenceState {
 }
 
 impl ProjectDatabase {
+    pub fn save_graph_diagram(
+        &self,
+        project_path: &str,
+        snapshot_id: &str,
+        provider_id: &str,
+        model: &str,
+        diagram: &serde_json::Value,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        let project_id: i64 = connection
+            .query_row(
+                "SELECT id FROM projects WHERE root_path = ?1",
+                [project_path],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("project was not found: {error}"))?;
+        let saved_at = current_time_unix_ms()?;
+        connection
+            .execute(
+                "INSERT INTO graph_diagrams (project_id, snapshot_id, provider_id, model, diagram_json, saved_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(project_id, snapshot_id, provider_id, model) DO UPDATE SET diagram_json = excluded.diagram_json, saved_at_unix_ms = excluded.saved_at_unix_ms",
+                params![project_id, snapshot_id, provider_id, model, serde_json::to_string(diagram).map_err(|error| error.to_string())?, saved_at],
+            )
+            .map_err(|error| format!("failed to save graph diagram: {error}"))?;
+        Ok(())
+    }
+
+    pub fn load_graph_diagram(
+        &self,
+        project_path: &str,
+        snapshot_id: &str,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<Option<StoredGraphDiagram>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database lock failed".to_owned())?;
+        let row = connection
+            .query_row(
+                "SELECT d.diagram_json, d.provider_id, d.model, d.saved_at_unix_ms FROM graph_diagrams d JOIN projects p ON p.id = d.project_id WHERE p.root_path = ?1 AND d.snapshot_id = ?2 AND d.provider_id = ?3 AND d.model = ?4",
+                params![project_path, snapshot_id, provider_id, model],
+                |row| {
+                    let json: String = row.get(0)?;
+                    Ok((json, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("failed to load graph diagram: {error}"))?;
+        row.map(|(json, provider_id, model, saved_at_unix_ms)| {
+            Ok(StoredGraphDiagram {
+                diagram: serde_json::from_str(&json).map_err(|error| error.to_string())?,
+                provider_id,
+                model,
+                saved_at_unix_ms,
+            })
+        })
+        .transpose()
+    }
+
     pub fn update_fix_task_workspace(
         &self,
         root_path: &str,
@@ -1344,6 +1416,7 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
             }
             9 => transaction.execute_batch(FIX_TASK_GIT_WORKTREE_MIGRATION)?,
             10 => transaction.execute_batch(FIX_TASK_READINESS_MIGRATION)?,
+            11 => transaction.execute_batch(GRAPH_DIAGRAM_MIGRATION)?,
             _ => return Err(rusqlite::Error::InvalidQuery),
         }
         transaction.pragma_update(None, "user_version", next_version)?;

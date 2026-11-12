@@ -13,7 +13,11 @@ use crate::command_error::{CommandError, CommandErrorCode};
 use crate::credentials::CredentialProvider;
 use crate::knowledge_graph::GraphSnapshot;
 use crate::openai_provider::OpenAiProvider;
+use crate::persistence::PersistenceState;
 use crate::state::AppState;
+
+const MAX_GRAPH_CONTEXT_CHARS: usize = 900_000;
+const MAX_GRAPH_NODE_CONTEXT_CHARS: usize = 600_000;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,10 +37,42 @@ pub struct GeneratedGraphDiagram {
     pub usage: ProviderUsage,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetGraphDiagramRequest {
+    pub project_path: String,
+    pub snapshot_id: String,
+    pub provider: CredentialProvider,
+    pub model: String,
+}
+
+#[tauri::command]
+pub fn get_graph_diagram(
+    request: GetGraphDiagramRequest,
+    persistence: State<'_, PersistenceState>,
+) -> Result<Option<GeneratedGraphDiagram>, CommandError> {
+    let stored = persistence
+        .database()?
+        .load_graph_diagram(
+            &request.project_path,
+            &request.snapshot_id,
+            provider_id(request.provider),
+            request.model.trim(),
+        )
+        .map_err(|error| internal(error))?;
+    Ok(stored.map(|item| GeneratedGraphDiagram {
+        diagram: item.diagram,
+        provider_id: item.provider_id,
+        model: item.model,
+        usage: ProviderUsage::default(),
+    }))
+}
+
 #[tauri::command]
 pub async fn generate_graph_diagram(
     request: GenerateGraphDiagramRequest,
     app_state: State<'_, AppState>,
+    persistence: State<'_, PersistenceState>,
 ) -> Result<GeneratedGraphDiagram, CommandError> {
     let root = std::fs::canonicalize(&request.project_path)
         .map_err(|error| invalid(format!("프로젝트 경로를 확인할 수 없습니다: {error}")))?;
@@ -51,22 +87,8 @@ pub async fn generate_graph_diagram(
         return Err(invalid("모델 ID를 입력해 주세요."));
     }
 
-    let graph_context = json!({
-        "nodes": request.snapshot.nodes.iter().map(|node| json!({
-            "id": node.node_id,
-            "type": node.node_type,
-            "name": node.name,
-            "qualifiedName": node.qualified_name,
-            "confidence": node.confidence,
-        })).collect::<Vec<_>>(),
-        "edges": request.snapshot.edges.iter().map(|edge| json!({
-            "type": edge.edge_type,
-            "source": edge.source_node_id,
-            "target": edge.target_node_id,
-            "targetName": edge.target_name,
-            "confidence": edge.confidence,
-        })).collect::<Vec<_>>(),
-    });
+    let (graph_context, truncated) = compact_graph_context(&request.snapshot);
+    let _ = truncated;
     let context = format!(
         "Create a hierarchical architecture diagram from analyzer facts only.\nReturn JSON exactly as {{\"title\":string,\"nodes\":[{{\"id\":string,\"label\":string,\"type\":string,\"layer\":number}}],\"edges\":[{{\"source\":string,\"target\":string,\"label\":string}}]}}.\nUse 0 for roots and increasing integers downstream. Do not invent nodes or edges.\nAnalyzer graph:\n{}",
         serde_json::to_string(&graph_context)
@@ -84,6 +106,7 @@ pub async fn generate_graph_diagram(
         max_context_tokens: 32_000,
         max_output_tokens: Some(8_192),
     };
+    let provider_key = provider_id(request.provider);
     let provider: Box<dyn AiProvider> = match request.provider {
         CredentialProvider::OpenAi => {
             if crate::credentials::openai_subscription_status()
@@ -122,12 +145,96 @@ pub async fn generate_graph_diagram(
         .map(|node| node.node_id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     validate_diagram(&diagram, &allowed_node_ids)?;
+    persistence
+        .database()?
+        .save_graph_diagram(
+            &request.project_path,
+            &request.snapshot.summary.snapshot_id,
+            provider_key,
+            model,
+            &diagram,
+        )
+        .map_err(internal)?;
     Ok(GeneratedGraphDiagram {
         diagram,
         provider_id: response.provider_id,
         model: response.model,
         usage: response.usage,
     })
+}
+
+fn provider_id(provider: CredentialProvider) -> &'static str {
+    match provider {
+        CredentialProvider::OpenAi => "openai",
+        CredentialProvider::Anthropic => "anthropic",
+        CredentialProvider::ClaudeCode => "claude-code",
+        CredentialProvider::Codex => "codex",
+        CredentialProvider::GitHub => "github",
+    }
+}
+
+fn compact_graph_context(snapshot: &GraphSnapshot) -> (Value, bool) {
+    let mut nodes = Vec::new();
+    let mut selected_ids = std::collections::BTreeSet::new();
+    let mut node_chars = 2;
+    let mut truncated = false;
+
+    for node in &snapshot.nodes {
+        let value = json!({
+            "id": node.node_id,
+            "type": node.node_type,
+            "name": node.name,
+            "qualifiedName": node.qualified_name,
+            "confidence": node.confidence,
+        });
+        let item_chars = serde_json::to_string(&value).map_or(0, |text| text.chars().count());
+        if node_chars + item_chars + 1 > MAX_GRAPH_NODE_CONTEXT_CHARS {
+            truncated = true;
+            continue;
+        }
+        node_chars += item_chars + 1;
+        selected_ids.insert(node.node_id.clone());
+        nodes.push(value);
+    }
+
+    let mut edges = Vec::new();
+    let mut edge_chars = 2;
+    for edge in &snapshot.edges {
+        let Some(target) = edge.target_node_id.as_ref() else {
+            truncated = true;
+            continue;
+        };
+        if !selected_ids.contains(&edge.source_node_id) || !selected_ids.contains(target) {
+            truncated = true;
+            continue;
+        }
+        let value = json!({
+            "type": edge.edge_type,
+            "source": edge.source_node_id,
+            "target": target,
+            "targetName": edge.target_name,
+            "confidence": edge.confidence,
+        });
+        let item_chars = serde_json::to_string(&value).map_or(0, |text| text.chars().count());
+        if node_chars + edge_chars + item_chars + 1 > MAX_GRAPH_CONTEXT_CHARS {
+            truncated = true;
+            continue;
+        }
+        edge_chars += item_chars + 1;
+        edges.push(value);
+    }
+
+    (
+        json!({
+            "nodes": nodes,
+            "edges": edges,
+            "sourceCounts": {
+                "nodes": snapshot.nodes.len(),
+                "edges": snapshot.edges.len(),
+            },
+        }),
+        truncated,
+    )
 }
 
 fn validate_diagram(

@@ -438,6 +438,11 @@ pub fn analyze_spring_sources(
         &mut diagnostics,
         &mut completeness,
     )?;
+    build_ktor_endpoints(
+        &files[..files.len().min(MAX_SOURCE_FILES)],
+        &mut nodes,
+        &mut edges,
+    )?;
 
     Ok(GraphSnapshotInput {
         snapshot_id: snapshot_id.to_owned(),
@@ -451,6 +456,84 @@ pub fn analyze_spring_sources(
         edges,
         diagnostics,
     })
+}
+
+fn build_ktor_endpoints(
+    files: &[SpringSourceFile<'_>],
+    nodes: &mut Vec<GraphNode>,
+    edges: &mut Vec<GraphEdge>,
+) -> Result<(), String> {
+    const ROUTE_METHODS: [(&str, &str); 6] = [
+        ("get", "GET"),
+        ("post", "POST"),
+        ("put", "PUT"),
+        ("patch", "PATCH"),
+        ("delete", "DELETE"),
+        ("head", "HEAD"),
+    ];
+    for file in files {
+        if file.language != SourceLanguage::Kotlin || !file.source.contains("Route") {
+            continue;
+        }
+        let file_id = stable_node_id(GraphNodeType::File, file.relative_path)?;
+        let mut line_start = 0usize;
+        for (line_index, line) in file.source.split_inclusive('\n').enumerate() {
+            let content = line.trim_end_matches(['\r', '\n']);
+            for (route_name, method) in ROUTE_METHODS {
+                let token = format!("{route_name}(");
+                let Some(token_offset) = content.find(&token) else {
+                    continue;
+                };
+                let after = &content[token_offset + token.len()..];
+                let Some(quote) = after.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+                    continue;
+                };
+                let rest = &after[quote.len_utf8()..];
+                let Some(end) = rest.find(quote) else {
+                    continue;
+                };
+                let path = &rest[..end];
+                let start_byte = line_start + token_offset;
+                let end_byte = start_byte + token.len() + end + quote.len_utf8() * 2;
+                let evidence = SourceRange {
+                    relative_path: file.relative_path.to_owned(),
+                    start_byte,
+                    end_byte,
+                    start_line: line_index as u32 + 1,
+                    start_column: token_offset as u32 + 1,
+                    end_line: line_index as u32 + 1,
+                    end_column: end_byte.saturating_sub(line_start) as u32 + 1,
+                };
+                let identity = format!("ktor:{}:{}:{}", file.relative_path, method, path);
+                let endpoint_id = stable_node_id(GraphNodeType::ApiEndpoint, &identity)?;
+                if nodes.iter().any(|node| node.node_id == endpoint_id) {
+                    continue;
+                }
+                let label = format!("{method} {path}");
+                nodes.push(GraphNode {
+                    node_id: endpoint_id.clone(),
+                    node_type: GraphNodeType::ApiEndpoint,
+                    name: label.clone(),
+                    qualified_name: Some(format!("{}:{line}", file.relative_path)),
+                    file_path: Some(file.relative_path.to_owned()),
+                    source_evidence: Some(evidence.clone()),
+                    language: Some(SourceLanguage::Kotlin),
+                    metadata: json!({"httpMethod": method, "path": path, "framework": "ktor"}),
+                    confidence: Confidence::Inferred,
+                });
+                edges.push(make_edge(
+                    &file_id,
+                    GraphEdgeType::Exposes,
+                    Some(endpoint_id),
+                    Some(label),
+                    evidence,
+                    Confidence::Inferred,
+                )?);
+            }
+            line_start += line.len();
+        }
+    }
+    Ok(())
 }
 
 fn analyzer(language: SourceLanguage) -> &'static dyn Analyzer {
@@ -1634,6 +1717,32 @@ class UserRepository
             .unwrap();
         assert_eq!(repository.metadata["springRoles"][0], "repository");
         assert_eq!(snapshot.completeness, GraphCompleteness::Complete);
+    }
+
+    #[test]
+    fn extracts_ktor_route_endpoints_from_kotlin_routes() {
+        let source = r#"
+fun Route.apiTokenRoutes(tokenService: ApiTokenService) {
+    post("/token/refresh") { }
+}
+"#;
+        let snapshot = analyze_spring_sources(
+            "snapshot-ktor",
+            &[SpringSourceFile {
+                relative_path: "src/main/kotlin/kr/reflua/backend/auth/ApiTokenRoutes.kt",
+                source,
+                language: SourceLanguage::Kotlin,
+            }],
+        )
+        .unwrap();
+        let endpoint = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.node_type == GraphNodeType::ApiEndpoint)
+            .expect("Ktor endpoint should be extracted");
+        assert_eq!(endpoint.metadata["httpMethod"], "POST");
+        assert_eq!(endpoint.metadata["path"], "/token/refresh");
+        assert_eq!(endpoint.metadata["framework"], "ktor");
     }
 
     #[test]
