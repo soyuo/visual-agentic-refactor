@@ -262,10 +262,14 @@ pub fn is_configured(provider: CredentialProvider) -> Result<bool, CommandError>
     if provider == CredentialProvider::ClaudeCode {
         // Claude Code owns its credentials. Only report whether the official
         // executable is available; authentication is checked by the CLI itself.
-        return Ok(std::process::Command::new("claude")
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success()));
+        return Ok(
+            crate::local_cli::resolve_command("claude").is_some_and(|path| {
+                crate::local_cli::std_command(path)
+                    .arg("--version")
+                    .output()
+                    .is_ok_and(|output| output.status.success())
+            }),
+        );
     }
     if provider == CredentialProvider::Codex {
         return Ok(crate::codex_provider::is_logged_in());

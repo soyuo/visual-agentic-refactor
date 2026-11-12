@@ -3,7 +3,6 @@ use std::process::Stdio;
 
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 
 use crate::ai_provider::{
     AiProvider, ProviderCapabilities, ProviderDescriptor, ProviderError, ProviderErrorCode,
@@ -50,7 +49,7 @@ impl AiProvider for ClaudeCodeProvider {
         ensure_not_cancelled(task)?;
         ensure_cli_available().await?;
         let executable = resolve_command("claude").ok_or_else(cli_unavailable_error)?;
-        let mut child = Command::new(executable)
+        let mut child = crate::local_cli::tokio_command(executable)
             .current_dir(&self.project_root)
             .args([
                 "-p",
@@ -136,7 +135,7 @@ fn launch_interactive_cli(project_root: &PathBuf) {
 
 async fn ensure_cli_available() -> Result<(), ProviderError> {
     if let Some(executable) = resolve_command("claude") {
-        if Command::new(executable)
+        if crate::local_cli::tokio_command(executable)
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -148,7 +147,7 @@ async fn ensure_cli_available() -> Result<(), ProviderError> {
         }
     }
     let npm = resolve_command("npm").ok_or_else(cli_unavailable_error)?;
-    let status = Command::new(npm)
+    let status = crate::local_cli::tokio_command(npm)
         .args(["install", "-g", PACKAGE])
         .status()
         .await

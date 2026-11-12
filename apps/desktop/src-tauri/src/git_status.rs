@@ -152,7 +152,7 @@ pub fn inspect_project(path: &Path) -> GitStatusResponse {
 }
 
 fn git_command(root: Option<&Path>, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    let mut command = crate::local_cli::std_command("git");
     command
         .arg("--no-optional-locks")
         .arg("-c")
@@ -346,7 +346,7 @@ mod tests {
     }
 
     fn run_git(root: &Path, args: &[&str]) -> Output {
-        let output = Command::new("git")
+        let output = crate::local_cli::std_command("git")
             .arg("-C")
             .arg(root)
             .args(args)
@@ -365,7 +365,7 @@ mod tests {
     }
 
     fn git_is_available() -> bool {
-        Command::new("git")
+        crate::local_cli::std_command("git")
             .arg("--version")
             .output()
             .is_ok_and(|output| output.status.success())

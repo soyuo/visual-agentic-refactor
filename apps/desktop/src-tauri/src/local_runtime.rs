@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -69,7 +69,7 @@ pub fn run(request: LocalLlmRequest) -> Result<LocalLlmResponse, CommandError> {
     let executable = validate_file(&request.executable_path, "실행 파일")?;
     let model = validate_file(&request.model_path, "모델 파일")?;
 
-    let mut command = Command::new(executable);
+    let mut command = crate::local_cli::std_command(executable);
     command
         .args(args)
         .arg("--model")

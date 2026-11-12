@@ -31,7 +31,7 @@ pub fn resolve_command(name: &str) -> Option<PathBuf> {
 
 fn resolve_from_path(name: &str) -> Option<PathBuf> {
     if cfg!(windows) {
-        let output = Command::new("where.exe").arg(name).output().ok()?;
+        let output = std_command("where.exe").arg(name).output().ok()?;
         if !output.status.success() {
             return None;
         }
@@ -41,7 +41,7 @@ fn resolve_from_path(name: &str) -> Option<PathBuf> {
             .find(|line| !line.is_empty())
             .map(PathBuf::from)
     } else {
-        let output = Command::new("sh")
+        let output = std_command("sh")
             .args(["-c", &format!("command -v {name}")])
             .output()
             .ok()?;
@@ -75,4 +75,27 @@ fn windows_cli_directories() -> Vec<PathBuf> {
         }
     }
     directories
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Build a background process that never flashes a console window on Windows.
+pub fn std_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// Async variant of [`std_command`].
+pub fn tokio_command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    #[allow(unused_mut)]
+    let mut command = tokio::process::Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
 }

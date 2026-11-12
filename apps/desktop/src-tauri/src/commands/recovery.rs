@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::State;
@@ -37,7 +36,7 @@ fn now() -> i64 {
 }
 
 fn git(workspace: &Path, args: &[&str]) -> Result<std::process::Output, CommandError> {
-    Command::new("git")
+    crate::local_cli::std_command("git")
         .args(args)
         .current_dir(workspace)
         .output()

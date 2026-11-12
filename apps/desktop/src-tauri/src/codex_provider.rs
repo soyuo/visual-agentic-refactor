@@ -3,7 +3,6 @@ use std::process::Stdio;
 
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 
 use crate::ai_provider::{
     AiProvider, ProviderCapabilities, ProviderDescriptor, ProviderError, ProviderErrorCode,
@@ -100,7 +99,7 @@ async fn run_exec(
     project_root: &PathBuf,
     include_model: bool,
 ) -> Result<std::process::Output, ProviderError> {
-    let mut command = Command::new(executable);
+    let mut command = crate::local_cli::tokio_command(executable);
     command.current_dir(project_root).args([
         "exec",
         "--json",
@@ -168,7 +167,7 @@ pub fn is_logged_in() -> bool {
     let Some(executable) = resolve_command("codex") else {
         return false;
     };
-    std::process::Command::new(executable)
+    crate::local_cli::std_command(executable)
         .args(["login", "status"])
         .output()
         .is_ok_and(|output| output.status.success())

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 use tauri::State;
 
 use crate::command_error::CommandError;
@@ -33,7 +32,7 @@ fn invalid(message: impl Into<String>) -> CommandError {
 }
 
 fn git(workspace: &Path, args: &[&str]) -> Result<std::process::Output, CommandError> {
-    Command::new("git")
+    crate::local_cli::std_command("git")
         .args(args)
         .current_dir(workspace)
         .output()

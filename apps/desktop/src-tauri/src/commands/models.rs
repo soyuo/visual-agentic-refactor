@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::command_error::{CommandError, CommandErrorCode};
@@ -57,7 +56,7 @@ async fn list_codex_models() -> Result<Vec<AiModelOption>, CommandError> {
             "공식 Codex CLI를 찾을 수 없습니다.",
         )
     })?;
-    let mut child = Command::new(executable)
+    let mut child = crate::local_cli::tokio_command(executable)
         .args(["app-server", "--listen", "stdio://"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

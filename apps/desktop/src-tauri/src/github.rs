@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -77,7 +77,7 @@ fn project_dir(path: &str) -> Result<PathBuf, CommandError> {
 }
 
 fn repository_slug(project: &Path) -> Result<(String, String), CommandError> {
-    let output = Command::new("git")
+    let output = crate::local_cli::std_command("git")
         .arg("-C")
         .arg(project)
         .args(["remote", "get-url", "origin"])
@@ -107,7 +107,7 @@ fn parse_github_remote(value: &str) -> Option<(String, String)> {
 }
 
 fn gh_api(project: &Path, endpoint: &str) -> Result<serde_json::Value, CommandError> {
-    let mut command = Command::new("gh");
+    let mut command = crate::local_cli::std_command("gh");
     command
         .args(["api", endpoint])
         .current_dir(project)

@@ -7,7 +7,7 @@ use crate::persistence::{
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::State;
@@ -104,7 +104,7 @@ pub fn run_fix_verification(
     let mut results = Vec::new();
     for candidate in candidates {
         let started = now();
-        let mut command = Command::new(&candidate.command);
+        let mut command = crate::local_cli::std_command(&candidate.command);
         command
             .args(&candidate.args)
             .current_dir(workspace)

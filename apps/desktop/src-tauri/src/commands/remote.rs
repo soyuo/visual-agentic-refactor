@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -179,7 +178,7 @@ pub fn execute_fix_task_remote_operation(
         .workspace_path
         .clone()
         .ok_or_else(|| invalid("workspace missing"))?;
-    let head = Command::new("git")
+    let head = crate::local_cli::std_command("git")
         .args(["-C", &workspace_for_head, "rev-parse", "HEAD"])
         .output()
         .map_err(|e| internal(e.to_string()))?;
@@ -190,14 +189,14 @@ pub fn execute_fix_task_remote_operation(
             "원격 작업 전 workspace HEAD가 승인된 기준 커밋과 다릅니다",
         ));
     }
-    let preflight_status = Command::new("git")
+    let preflight_status = crate::local_cli::std_command("git")
         .args(["-C", &workspace_for_head, "status", "--porcelain"])
         .output()
         .map_err(|e| internal(e.to_string()))?;
     if !preflight_status.status.success() || !preflight_status.stdout.is_empty() {
         return Err(invalid("workspace is dirty"));
     }
-    let preflight_branch = Command::new("git")
+    let preflight_branch = crate::local_cli::std_command("git")
         .args(["-C", &workspace_for_head, "branch", "--show-current"])
         .output()
         .map_err(|e| internal(e.to_string()))?;
@@ -234,7 +233,7 @@ pub fn execute_fix_task_remote_operation(
         .workspace_path
         .clone()
         .ok_or_else(|| invalid("workspace가 없습니다"))?;
-    let status = match Command::new("git")
+    let status = match crate::local_cli::std_command("git")
         .args(["-C", &workspace, "status", "--porcelain"])
         .output()
     {
@@ -265,7 +264,7 @@ pub fn execute_fix_task_remote_operation(
             .map_err(internal)?;
         return Err(error);
     }
-    let branch = match Command::new("git")
+    let branch = match crate::local_cli::std_command("git")
         .args(["-C", &workspace, "branch", "--show-current"])
         .output()
     {
@@ -296,7 +295,7 @@ pub fn execute_fix_task_remote_operation(
             .map_err(internal)?;
         return Err(error);
     }
-    let head = match Command::new("git")
+    let head = match crate::local_cli::std_command("git")
         .args(["-C", &workspace, "rev-parse", "HEAD"])
         .output()
     {
@@ -331,7 +330,7 @@ pub fn execute_fix_task_remote_operation(
     }
     let execution_result: Result<std::process::Output, CommandError> = (|| {
         let output = if remote.action == "push" {
-            Command::new("git")
+            crate::local_cli::std_command("git")
                 .args(["-C", &workspace, "push", "origin", &remote.branch])
                 .output()
                 .map_err(|e| internal(e.to_string()))?
@@ -344,7 +343,7 @@ pub fn execute_fix_task_remote_operation(
                 .body
                 .as_deref()
                 .ok_or_else(|| invalid("PR 본문이 없습니다"))?;
-            Command::new("gh")
+            crate::local_cli::std_command("gh")
                 .args([
                     "pr",
                     "create",

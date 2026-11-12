@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
@@ -114,7 +113,7 @@ pub fn get_fix_patch_diff(
     if task.workspace_state != FixTaskWorkspaceState::Ready || !workspace.is_dir() {
         return Err(invalid("Patch workspace is not ready"));
     }
-    let output = Command::new("git")
+    let output = crate::local_cli::std_command("git")
         .args(["diff", "--no-ext-diff", "--binary", "--unified=80", "--"])
         .current_dir(workspace)
         .output()
@@ -357,7 +356,7 @@ fn run_git_apply_with_mode(
     reverse: bool,
 ) -> Result<std::process::Output, CommandError> {
     use std::io::Write;
-    let mut command = Command::new("git");
+    let mut command = crate::local_cli::std_command("git");
     command
         .current_dir(workspace)
         .args(["apply", "--whitespace=nowarn"]);
@@ -386,7 +385,7 @@ fn run_git_apply_with_mode(
 }
 
 fn changed_paths(workspace: &Path) -> Result<Vec<String>, CommandError> {
-    let output = Command::new("git")
+    let output = crate::local_cli::std_command("git")
         .current_dir(workspace)
         .args(["diff", "--name-only"])
         .output()
@@ -447,7 +446,7 @@ fn prepare_fix_task_workspace_inner(
     let base_commit = if let Some(base_commit) = task.base_commit.clone() {
         base_commit
     } else {
-        let output = Command::new("git")
+        let output = crate::local_cli::std_command("git")
             .current_dir(root)
             .args(["rev-parse", "HEAD"])
             .output()
@@ -464,7 +463,7 @@ fn prepare_fix_task_workspace_inner(
     if !branch.starts_with("fix/") || branch.len() > 128 || branch.contains("..") {
         return Err(invalid("안전하지 않은 수정 브랜치 이름입니다."));
     }
-    let mut add = Command::new("git");
+    let mut add = crate::local_cli::std_command("git");
     add.current_dir(root).args(["worktree", "add"]);
     if task.git_branch.is_none() {
         add.args(["-b", &branch]);
@@ -549,7 +548,7 @@ fn remove_fix_task_workspace_inner(
         workspace_path,
         &request.task_id,
     )?;
-    let result = Command::new("git")
+    let result = crate::local_cli::std_command("git")
         .current_dir(&request.project_path)
         .args(["worktree", "remove", "--force"])
         .arg(workspace)
@@ -717,7 +716,7 @@ pub fn list_orphan_fix_worktrees(
     persistence: State<'_, PersistenceState>,
 ) -> Result<Vec<OrphanWorktree>, CommandError> {
     validate(&project_path, "orphan-scan", "lifecycle")?;
-    let output = Command::new("git")
+    let output = crate::local_cli::std_command("git")
         .current_dir(&project_path)
         .args(["worktree", "list", "--porcelain"])
         .output()
