@@ -54,6 +54,7 @@ interface AppShellProps {
   onGraphViewSelected: () => void;
   onApiViewSelected: () => void;
   onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<import("../lib/commands").GeneratedGraphDiagram>;
+  onListAiModels: (provider: "openai" | "anthropic" | "claudeCode" | "codex") => Promise<import("../lib/commands").AiModelOption[]>;
   onOpenGraphSource: (relativePath: string, line: number | null) => void;
   revealPath: string | null;
   graphSourceLocation: { relativePath: string; line: number | null } | null;
@@ -217,6 +218,7 @@ function AppShell(props: AppShellProps) {
             onAnalyze={props.onAnalyzeGraph}
             onSelectionChanged={setSelectedGraphNodeId}
             onGenerateAiDiagram={props.onGenerateAiDiagram}
+            onListAiModels={props.onListAiModels}
             onOpenSource={(relativePath, line) => {
               setActiveView("project");
               props.onOpenGraphSource(relativePath, line);

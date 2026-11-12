@@ -24,6 +24,11 @@ export interface AppInfoResponse {
 }
 
 export type CredentialProvider = "openai" | "anthropic" | "claudeCode" | "codex" | "github";
+export interface AiModelOption { id: string; displayName: string; }
+export async function listAiModels(provider: CredentialProvider): Promise<AiModelOption[]> {
+  try { return await invoke<AiModelOption[]>("list_ai_models", { request: { provider } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
 export type LocalRuntimeKind = "llamaCpp" | "ollama";
 export interface LocalLlmRequest { runtime: LocalRuntimeKind; executablePath: string; modelPath: string; prompt: string; timeoutMs?: number; args?: string[]; }
 export interface LocalLlmResponse { text: string; structured: unknown; }

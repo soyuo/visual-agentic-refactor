@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
-import type { GeneratedGraphDiagram, GraphDiagramNode, GraphNode, GraphSnapshot } from "../lib/commands";
+import type { AiModelOption, GeneratedGraphDiagram, GraphDiagramNode, GraphNode, GraphSnapshot } from "../lib/commands";
 import {
   buildGraphViewModel,
   nextGraphNodeId,
@@ -15,6 +15,7 @@ interface GraphExplorerProps {
   onOpenSource: (relativePath: string, line: number | null) => void;
   onSelectionChanged: (nodeId: string | null) => void;
   onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<GeneratedGraphDiagram>;
+  onListAiModels: (provider: "openai" | "anthropic" | "claudeCode" | "codex") => Promise<AiModelOption[]>;
 }
 
 const views: { id: GraphViewKind; label: string }[] = [
@@ -121,6 +122,8 @@ function GraphExplorer(props: GraphExplorerProps) {
   const [dragOrigin, setDragOrigin] = createSignal<{ x: number; y: number } | null>(null);
   const [aiProvider, setAiProvider] = createSignal<"openai" | "anthropic" | "claudeCode" | "codex">("codex");
   const [aiModel, setAiModel] = createSignal("");
+  const [aiModels, setAiModels] = createSignal<AiModelOption[]>([]);
+  const [aiModelsLoading, setAiModelsLoading] = createSignal(false);
   const [aiDiagram, setAiDiagram] = createSignal<GeneratedGraphDiagram | null>(null);
   const [aiBusy, setAiBusy] = createSignal(false);
   const [aiError, setAiError] = createSignal<string | null>(null);
@@ -136,6 +139,21 @@ function GraphExplorer(props: GraphExplorerProps) {
     edge.sourceNodeId === selectedId() || edge.targetNodeId === selectedId()) ?? []);
 
   createEffect(() => props.onSelectionChanged(selectedNode()?.nodeId ?? null));
+
+  createEffect(() => {
+    const provider = aiProvider();
+    setAiModelsLoading(true);
+    props.onListAiModels(provider)
+      .then((models) => {
+        setAiModels(models);
+        setAiModel(models[0]?.id ?? "");
+      })
+      .catch(() => {
+        setAiModels([]);
+        setAiModel("");
+      })
+      .finally(() => setAiModelsLoading(false));
+  });
 
   createEffect(() => {
     const nodes = model()?.nodes ?? [];
@@ -253,8 +271,12 @@ function GraphExplorer(props: GraphExplorerProps) {
                 <option value="claudeCode">Claude Code</option>
                 <option value="codex">Codex (공식 앱)</option>
               </select>
-              <input value={aiModel()} onInput={(event) => setAiModel(event.currentTarget.value)} placeholder="모델 ID" aria-label="AI 모델 ID" />
-              <button class="secondary-button" type="button" disabled={aiBusy() || !aiModel().trim()} onClick={() => void generateAiDiagram()}>{aiBusy() ? "AI 생성 중..." : "AI로 계층 구조도 생성"}</button>
+              <select value={aiModel()} onChange={(event) => setAiModel(event.currentTarget.value)} disabled={aiModelsLoading() || aiModels().length === 0} aria-label="AI 모델">
+                <Show when={aiModelsLoading()}><option value="">모델 목록 조회 중...</option></Show>
+                <Show when={!aiModelsLoading() && aiModels().length === 0}><option value="">모델 목록이 없습니다</option></Show>
+                <For each={aiModels()}>{(model) => <option value={model.id}>{model.displayName} ({model.id})</option>}</For>
+              </select>
+              <button class="secondary-button" type="button" disabled={aiBusy() || !aiModel()} onClick={() => void generateAiDiagram()}>{aiBusy() ? "AI 생성 중..." : "AI로 계층 구조도 생성"}</button>
             </div>
             <Show when={aiError()}><p class="project-error" role="alert">{aiError()}</p></Show>
             <Show when={aiDiagram()}>{(generated) => <section class="graph-ai-diagram" aria-label="AI 계층 구조도">
@@ -264,6 +286,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                 <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node" transform={`translate(${position.x} ${position.y})`}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
               </svg>
             </section>}</Show>
+            <Show when={!aiDiagram()}>
             <div class="graph-layout">
               <div class="graph-canvas-wrap">
                 <svg class="graph-canvas" viewBox="0 0 1000 600" role="group" aria-label={`${views.find((item) => item.id === view())?.label} 그래프`}
@@ -339,6 +362,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                 </Show>
               </aside>
             </div>
+            </Show>
           </Show>
         </>}
       </Show>

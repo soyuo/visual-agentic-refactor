@@ -9,6 +9,7 @@ import {
   cancelTask,
   getGraphSnapshot,
   generateGraphDiagram,
+  listAiModels,
   getLastProject,
   getGitStatus,
   getAppInfo,
@@ -306,6 +307,7 @@ function App() {
       onGraphViewSelected={() => void loadLatestGraph()}
       onApiViewSelected={() => void loadLatestGraph()}
       onGenerateAiDiagram={handleGenerateAiDiagram}
+      onListAiModels={listAiModels}
       onOpenGraphSource={handleOpenGraphSource}
       revealPath={revealPath()}
       graphSourceLocation={graphSourceLocation()}
