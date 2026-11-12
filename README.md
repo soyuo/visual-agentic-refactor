@@ -134,16 +134,97 @@ JavaScript/TypeScript, Python, 추가 프레임워크, 증분 분석, 대규모 
 
 ## 7. 만들면서 해결한 문제점들
 
-- 전체 프로젝트를 AI에 전달하지 않고 선택 범위와 관련 근거만 구성했습니다.
-- AI 결과가 실제 파일·심볼·위치와 일치하는지 검증하도록 했습니다.
-- API key 인증과 subscription 인증을 별도 경로로 분리했습니다.
-- Claude Code private token을 추출하는 대신 공식 로컬 CLI와 대화형 로그인을
-  사용하도록 경계를 정했습니다.
-- 원본 작업 트리의 기존 변경을 보존하기 위해 수정 작업을 격리했습니다.
-- 패치 범위, diff, 검증 결과, commit readiness를 각각 확인하도록 했습니다.
-- 실패·취소·재시작·충돌 상태를 저장하고 제한된 재시도와 복구 흐름을 마련했습니다.
-- 대규모 그래프, 증분 분석, 추가 언어·프레임워크를 공통 analyzer 계약으로
-  확장할 수 있도록 분리했습니다.
+### 전체 프로젝트가 AI로 전송될 수 있는 문제
+
+- **상황:** 프로젝트 전체를 그대로 AI provider에 전달하면 불필요한 코드와
+  민감한 파일이 포함되고, 사용자가 무엇을 전송하는지 확인하기 어려웠습니다.
+- **문제 위치:** 리뷰 요청과 컨텍스트 구성 흐름
+  (`apps/desktop/src-tauri/src/commands/context.rs`)
+- **해결:** 사용자가 선택한 파일 또는 그래프 노드와 관련된 코드·호출·참조·API만
+  컨텍스트로 구성하고, 미리보기와 일회성 외부 전송 승인을 거친 뒤에만 provider를
+  호출하도록 작업했습니다.
+
+### AI가 근거 없는 finding을 반환할 수 있는 문제
+
+- **상황:** AI가 실제로 존재하지 않는 파일·심볼·위치를 지적하거나, 분석 결과와
+  맞지 않는 finding을 반환할 수 있었습니다.
+- **문제 위치:** provider 응답 처리와 finding 저장 흐름
+  (`apps/desktop/src-tauri/src/commands/findings.rs`)
+- **해결:** 구조화된 finding schema를 정의하고, 파일·범위·심볼·스냅샷 근거를
+  실제 분석 결과와 대조한 뒤 유효한 finding만 저장하도록 검증을 추가했습니다.
+
+### API key와 구독 인증이 섞일 수 있는 문제
+
+- **상황:** API key 기반 과금과 subscription 기반 인증을 같은 경로로 처리하면
+  사용자가 어떤 계정과 비용 경로를 사용하는지 알기 어렵고, credential 경계가
+  흐려질 수 있었습니다.
+- **문제 위치:** provider credential 관리와 AI provider 선택 UI
+  (`apps/desktop/src-tauri/src/credentials.rs`,
+  `apps/desktop/src/components/AiReviewWorkspace.tsx`)
+- **해결:** API key와 subscription 인증을 별도 provider 경로로 분리하고, UI에서
+  인증 방식과 동의 범위를 구분해 표시했습니다.
+
+### Claude Code 구독 로그인을 직접 처리해야 하는 문제
+
+- **상황:** 제3자 앱이 Claude Code의 private token이나 cookie를 읽어 OAuth를
+  중계하는 방식은 보안상 적절하지 않았고, 공식적인 제3자 인증 계약도 없었습니다.
+- **문제 위치:** Claude Code provider 인증 경계
+  (`apps/desktop/src-tauri/src/claude_code_provider.rs`)
+- **해결:** 토큰을 추출하거나 저장하지 않고 공식 로컬 `claude` CLI를 실행하도록
+  변경했습니다. CLI가 없으면 npm global 설치를 시도하고, 인증이 필요하면 공식
+  Claude Code 대화형 로그인으로 넘기도록 작업했습니다.
+
+### 자동 수정이 원본 작업 트리를 훼손할 수 있는 문제
+
+- **상황:** 사용자의 기존 변경 사항이 있는 작업 트리에 AI 패치를 직접 적용하면
+  원본 코드와 사용자의 작업을 잃을 위험이 있었습니다.
+- **문제 위치:** 수정 작업 및 worktree lifecycle
+  (`apps/desktop/src-tauri/src/commands/fix_tasks.rs`)
+- **해결:** 승인된 finding마다 독립 수정 작업과 격리 Git worktree를 만들고,
+  원본 작업 트리는 읽기 상태로 보존하도록 했습니다.
+
+### 패치가 의도하지 않은 파일까지 바꿀 수 있는 문제
+
+- **상황:** AI가 제안한 패치가 승인된 finding의 범위를 벗어나거나 관련 없는
+  파일을 변경할 수 있었습니다.
+- **문제 위치:** 패치 계획·적용·diff 검토 흐름
+  (`apps/desktop/src-tauri/src/commands/fix_tasks.rs`)
+- **해결:** 패치 전에 영향 파일과 범위를 기록하고, 적용 후 실제 변경 목록과
+  범위 정책을 다시 검사하며, 사용자가 diff를 확인한 뒤에만 다음 단계로 진행하게
+  했습니다.
+
+### 검증하지 않은 수정이 commit될 수 있는 문제
+
+- **상황:** 빌드·테스트 실패나 실행 불가 검사가 명확히 구분되지 않으면 검증되지
+  않은 패치가 commit 준비 상태로 표시될 수 있었습니다.
+- **문제 위치:** 검증 정책과 commit readiness
+  (`apps/desktop/src-tauri/src/commands/verification.rs`,
+  `apps/desktop/src-tauri/src/commands/readiness.rs`)
+- **해결:** 검증 결과를 `Passed`, `Failed`, `Skipped`, `Unavailable`,
+  `Cancelled`로 저장하고, 실패 또는 미완료 검사가 있으면 commit readiness를
+  차단하도록 작업했습니다.
+
+### 실패·취소·충돌 후 작업을 복구하기 어려운 문제
+
+- **상황:** 패치, 검증, 통합 또는 원격 작업 중 실패하면 현재 상태와 재시작 가능
+  여부를 잃을 수 있었습니다.
+- **문제 위치:** patch orchestration, integration, recovery 흐름
+  (`apps/desktop/src-tauri/src/commands/recovery.rs`,
+  `apps/desktop/src-tauri/src/commands/integration.rs`)
+- **해결:** 상태 전이와 실패 로그를 저장하고, 취소·재시작·충돌 중단을 명시적인
+  상태로 기록했습니다. 기준 commit과 worktree 상태를 확인한 뒤 안전한 복구만
+  허용하도록 했습니다.
+
+### 분석 대상과 provider를 확장하기 어려운 문제
+
+- **상황:** 언어·프레임워크·AI provider를 직접 연결하면 기능이 늘어날수록 핵심
+  흐름이 서로 강하게 결합될 수 있었습니다.
+- **문제 위치:** analyzer와 provider 공통 계약
+  (`apps/desktop/src-tauri/src/analyzer.rs`,
+  `apps/desktop/src-tauri/src/ai_provider.rs`)
+- **해결:** analyzer/provider adapter 계약과 지원 수준·신뢰도 보고 형식을
+  분리했습니다. 이를 기반으로 JavaScript/TypeScript, Python, 로컬 모델,
+  GitHub 연동, analyzer plugin을 독립적으로 추가할 수 있도록 구성했습니다.
 
 ## 8. 검증과 제한 사항
 
