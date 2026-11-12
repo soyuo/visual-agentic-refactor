@@ -114,9 +114,10 @@ pub fn integrate_fix_task_commits(
             return Err(invalid("커밋 SHA 형식이 올바르지 않습니다."));
         }
     }
-    let mut integration = task
-        .orchestration
+    let orchestration = task.orchestration.clone();
+    let mut integration = orchestration
         .integration
+        .clone()
         .unwrap_or(FixTaskIntegration {
             commits: request.commits.clone(),
             current_index: 0,
@@ -152,7 +153,7 @@ pub fn integrate_fix_task_commits(
         &request.task_id,
         &FixTaskOrchestration {
             integration: Some(integration.clone()),
-            ..task.orchestration.clone()
+            ..orchestration.clone()
         },
     )
     .map_err(internal)?;
@@ -168,7 +169,7 @@ pub fn integrate_fix_task_commits(
                 &request.task_id,
                 &FixTaskOrchestration {
                     integration: Some(integration.clone()),
-                    ..task.orchestration.clone()
+                    ..orchestration.clone()
                 },
             );
             return Err(internal(
@@ -184,7 +185,7 @@ pub fn integrate_fix_task_commits(
             &request.task_id,
             &FixTaskOrchestration {
                 integration: Some(integration.clone()),
-                ..task.orchestration.clone()
+                ..orchestration.clone()
             },
         )
         .map_err(internal)?;
@@ -195,7 +196,7 @@ pub fn integrate_fix_task_commits(
         &request.task_id,
         &FixTaskOrchestration {
             integration: Some(integration.clone()),
-            ..task.orchestration
+            ..orchestration
         },
     )
     .map_err(internal)?;

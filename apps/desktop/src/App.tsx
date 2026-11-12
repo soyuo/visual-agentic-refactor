@@ -296,6 +296,7 @@ function App() {
       graphError={graphError()}
       onAnalyzeGraph={() => void handleAnalyzeGraph()}
       onGraphViewSelected={() => void loadLatestGraph()}
+      onApiViewSelected={() => void loadLatestGraph()}
       onOpenGraphSource={handleOpenGraphSource}
       revealPath={revealPath()}
       graphSourceLocation={graphSourceLocation()}

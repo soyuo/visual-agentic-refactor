@@ -81,6 +81,11 @@ pub fn finalize_fix_task(
     if task.base_commit.as_deref() != Some(request.expected_base_commit.as_str()) {
         return Err(invalid("기준 SHA가 일치하지 않습니다."));
     }
+    let recovery = task
+        .orchestration
+        .recovery
+        .as_ref()
+        .ok_or_else(|| invalid("복구 가능한 최종 검증 결과가 없습니다."))?;
     if recovery.state != "verification_failed" {
         return Err(invalid("실패한 최종 검증 결과만 복구할 수 있습니다."));
     }

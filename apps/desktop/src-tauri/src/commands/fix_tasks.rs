@@ -927,11 +927,11 @@ fn workspace_path_for(root: &Path, task_id: &str) -> Result<PathBuf, CommandErro
     Ok(parent.join(task_id))
 }
 
-pub(crate) fn validate_stored_workspace_path(
+pub(crate) fn validate_stored_workspace_path<'a>(
     root: &Path,
-    workspace_path: &str,
+    workspace_path: &'a str,
     task_id: &str,
-) -> Result<&Path, CommandError> {
+) -> Result<&'a Path, CommandError> {
     let workspace = Path::new(workspace_path);
     let expected_parent = root
         .parent()

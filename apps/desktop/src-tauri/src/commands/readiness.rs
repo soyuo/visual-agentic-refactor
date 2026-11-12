@@ -34,6 +34,8 @@ pub fn evaluate_fix_commit_readiness(
     let verification = task.verification.clone();
     let changed_files = request
         .changed_files
+        .as_ref()
+        .cloned()
         .unwrap_or_else(|| task.after_paths.clone());
     let allowed: HashSet<_> = task.target_paths.iter().cloned().collect();
     if !changed_files_are_in_scope(&changed_files, &allowed) {
