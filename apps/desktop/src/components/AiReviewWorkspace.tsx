@@ -5,6 +5,7 @@ import {
   createFixTask,
   createFixPatchPlan,
   applyFixPatch,
+  generateFixPatch,
   getFixPatchDiff,
   updateFixTaskOrchestration,
   disconnectOpenAiSubscription,
@@ -527,6 +528,26 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     }
   }
 
+  async function generatePatch(task: StoredFixTask) {
+    const projectPath = props.project?.path;
+    const modelId = model().trim();
+    const files = task.patchPlan?.files ?? [];
+    if (!projectPath || !modelId || patchTaskId() !== null || task.workspaceState !== "ready" || files.length === 0) return;
+    const providerLabel = providers.find((item) => item.id === selectedProvider())?.label ?? selectedProvider();
+    const consent = window.confirm(`다음 파일 내용과 finding을 ${providerLabel} (${modelId})에 전송해 패치를 생성합니다.\n\n${files.join("\n")}\n\n계속할까요?`);
+    if (!consent) return;
+    setPatchTaskId(task.taskId);
+    setSessionError(null);
+    try {
+      const generated = await generateFixPatch(projectPath, task.taskId, selectedProvider(), modelId);
+      setPatchDrafts((drafts) => ({ ...drafts, [task.taskId]: generated.patch }));
+    } catch (cause: unknown) {
+      setSessionError(toAppCommandError(cause).message);
+    } finally {
+      setPatchTaskId(null);
+    }
+  }
+
   async function applyPatch(task: StoredFixTask) {
     const projectPath = props.project?.path;
     const patch = patchDrafts()[task.taskId]?.trim();
@@ -902,7 +923,10 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                             </button>}>
                               {(plan) => <>
                                 <span role="status">계획: {plan.files.join(", ")}</span>
-                                <textarea class="patch-input" aria-label="적용할 unified diff" placeholder="git diff 형식 패치를 붙여 넣으세요." value={patchDrafts()[task.taskId] ?? ""} onInput={(event) => setPatchDrafts((drafts) => ({ ...drafts, [task.taskId]: event.currentTarget.value }))} />
+                                <button class="secondary-button" type="button" disabled={patchTaskId() !== null || task.workspaceState !== "ready" || !model().trim()} onClick={() => void generatePatch(task)}>
+                                  {patchTaskId() === task.taskId ? "AI 패치 생성 중…" : "AI 패치 생성"}
+                                </button>
+                                <textarea class="patch-input" aria-label="적용할 unified diff" placeholder="AI 패치를 생성하거나 git diff 형식 패치를 붙여 넣으세요. 적용 전 내용을 확인하세요." value={patchDrafts()[task.taskId] ?? ""} onInput={(event) => setPatchDrafts((drafts) => ({ ...drafts, [task.taskId]: event.currentTarget.value }))} />
                                 <button class="secondary-button" type="button" disabled={patchTaskId() !== null || task.workspaceState !== "ready" || !(patchDrafts()[task.taskId]?.trim())} onClick={() => void applyPatch(task)}>
                                   {patchTaskId() === task.taskId ? "적용 중…" : "격리 workspace에 적용"}
                                 </button>

@@ -828,6 +828,18 @@ export async function applyFixPatch(projectPath: string, taskId: string, patch: 
   catch (error) { throw toAppCommandError(error); }
 }
 
+export interface GeneratedFixPatch {
+  taskId: string;
+  patch: string;
+  providerId: string;
+  model: string;
+}
+
+export async function generateFixPatch(projectPath: string, taskId: string, provider: CredentialProvider, model: string): Promise<GeneratedFixPatch> {
+  try { return await invoke<GeneratedFixPatch>("generate_fix_patch", { request: { projectPath, taskId, provider, model } }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+
 export interface FixPatchDiffResponse {
   taskId: string;
   files: string[];

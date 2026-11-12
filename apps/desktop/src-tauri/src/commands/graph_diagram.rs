@@ -108,26 +108,7 @@ pub async fn generate_graph_diagram(
         output_schema: Some(diagram_schema()),
     };
     let provider_key = provider_id(request.provider);
-    let provider: Box<dyn AiProvider> = match request.provider {
-        CredentialProvider::OpenAi => {
-            if crate::credentials::openai_subscription_status()
-                .map_err(|_| internal("OpenAI 인증 상태를 확인할 수 없습니다."))?
-                .inference_enabled
-            {
-                Box::new(OpenAiProvider::from_subscription().map_err(provider_error)?)
-            } else {
-                Box::new(OpenAiProvider::from_keyring().map_err(provider_error)?)
-            }
-        }
-        CredentialProvider::Anthropic => {
-            Box::new(AnthropicProvider::from_keyring().map_err(provider_error)?)
-        }
-        CredentialProvider::ClaudeCode => Box::new(ClaudeCodeProvider::new(root)),
-        CredentialProvider::Codex => Box::new(CodexProvider::new(root)),
-        CredentialProvider::GitHub => {
-            return Err(invalid("GitHub는 AI provider로 사용할 수 없습니다."));
-        }
-    };
+    let provider = build_provider(request.provider, root)?;
     validate_request(&review_request, &provider.descriptor()).map_err(provider_error)?;
     let task = app_state.register_task()?;
     let response = provider
@@ -164,7 +145,33 @@ pub async fn generate_graph_diagram(
     })
 }
 
-fn provider_id(provider: CredentialProvider) -> &'static str {
+pub(crate) fn build_provider(
+    provider: CredentialProvider,
+    root: std::path::PathBuf,
+) -> Result<Box<dyn AiProvider>, CommandError> {
+    Ok(match provider {
+        CredentialProvider::OpenAi => {
+            if crate::credentials::openai_subscription_status()
+                .map_err(|_| internal("OpenAI 인증 상태를 확인할 수 없습니다."))?
+                .inference_enabled
+            {
+                Box::new(OpenAiProvider::from_subscription().map_err(provider_error)?)
+            } else {
+                Box::new(OpenAiProvider::from_keyring().map_err(provider_error)?)
+            }
+        }
+        CredentialProvider::Anthropic => {
+            Box::new(AnthropicProvider::from_keyring().map_err(provider_error)?)
+        }
+        CredentialProvider::ClaudeCode => Box::new(ClaudeCodeProvider::new(root)),
+        CredentialProvider::Codex => Box::new(CodexProvider::new(root)),
+        CredentialProvider::GitHub => {
+            return Err(invalid("GitHub는 AI provider로 사용할 수 없습니다."));
+        }
+    })
+}
+
+pub(crate) fn provider_id(provider: CredentialProvider) -> &'static str {
     match provider {
         CredentialProvider::OpenAi => "openai",
         CredentialProvider::Anthropic => "anthropic",
@@ -308,7 +315,7 @@ fn invalid(message: impl Into<String>) -> CommandError {
 fn internal(message: impl Into<String>) -> CommandError {
     CommandError::new(CommandErrorCode::Internal, message)
 }
-fn provider_error(error: ProviderError) -> CommandError {
+pub(crate) fn provider_error(error: ProviderError) -> CommandError {
     CommandError::new(CommandErrorCode::Internal, error.message)
 }
 

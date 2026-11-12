@@ -88,6 +88,7 @@ pub fn run() {
             commands::graph::compare_graph_snapshot,
             commands::graph::get_graph_snapshot,
             commands::graph_diagram::generate_graph_diagram,
+            commands::fix_patch_agent::generate_fix_patch,
             commands::graph_diagram::get_graph_diagram,
             commands::models::list_ai_models,
             commands::spring::analyze_spring_project,
