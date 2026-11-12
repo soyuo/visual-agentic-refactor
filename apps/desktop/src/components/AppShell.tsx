@@ -128,6 +128,7 @@ function AppShell(props: AppShellProps) {
     return [
       { label: "Kotlin", result: detection.kotlin },
       { label: "Java", result: detection.java },
+      { label: "Python", result: detection.python },
       { label: "Spring Boot", result: detection.springBoot },
       { label: "Gradle", result: detection.gradle },
       { label: "Node.js", result: detection.node },
