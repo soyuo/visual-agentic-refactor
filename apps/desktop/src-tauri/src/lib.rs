@@ -74,6 +74,7 @@ pub fn run() {
             commands::remote::approve_fix_task_remote_operation,
             commands::remote::execute_fix_task_remote_operation,
             commands::context::preview_review_context,
+            commands::context::read_project_source,
             commands::review_persistence::save_review_session,
             commands::review_persistence::list_review_sessions,
             commands::review_persistence::load_review_session,

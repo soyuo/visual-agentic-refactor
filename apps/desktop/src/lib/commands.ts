@@ -998,3 +998,8 @@ export async function disconnectOpenAiSubscription(): Promise<void> {
   try { await invoke("disconnect_openai_subscription"); }
   catch (error) { throw toAppCommandError(error); }
 }
+
+export async function readProjectSource(request: { projectPath: string; relativePath: string }): Promise<string> {
+  try { return await invoke<string>("read_project_source", { request }); }
+  catch (error) { throw toAppCommandError(error); }
+}

@@ -762,3 +762,45 @@ fn invalid(message: impl Into<String>) -> CommandError {
 fn internal(message: String) -> CommandError {
     CommandError::new(CommandErrorCode::Internal, message)
 }
+
+const MAX_SOURCE_PREVIEW_BYTES: u64 = 512 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadProjectSourceRequest {
+    pub project_path: String,
+    pub relative_path: String,
+}
+
+/// Reads one project file for local display only. Shares the boundary, size,
+/// and sensitive-path rules used for review context; nothing leaves the device.
+#[tauri::command]
+pub fn read_project_source(request: ReadProjectSourceRequest) -> Result<String, CommandError> {
+    let project_path = PathBuf::from(&request.project_path);
+    if !project_path.is_absolute() {
+        return Err(invalid("프로젝트 경로가 올바르지 않습니다."));
+    }
+    let root = fs::canonicalize(&project_path)
+        .map_err(|_| invalid("프로젝트 경로를 확인할 수 없습니다."))?;
+    read_source(&root, &request.relative_path, MAX_SOURCE_PREVIEW_BYTES)
+        .map_err(|message| invalid(&message))
+}
+
+#[cfg(test)]
+mod read_project_source_tests {
+    use super::*;
+
+    #[test]
+    fn reads_inside_root_and_rejects_escape() {
+        let dir = std::env::temp_dir().join(format!("var-src-preview-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Main.kt"), "fun main() {}\n").unwrap();
+        let request = |relative: &str| ReadProjectSourceRequest {
+            project_path: dir.to_string_lossy().into_owned(),
+            relative_path: relative.to_owned(),
+        };
+        assert_eq!(read_project_source(request("Main.kt")).unwrap(), "fun main() {}\n");
+        assert!(read_project_source(request("../outside.kt")).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
