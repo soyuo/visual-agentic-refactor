@@ -463,77 +463,216 @@ fn build_ktor_endpoints(
     nodes: &mut Vec<GraphNode>,
     edges: &mut Vec<GraphEdge>,
 ) -> Result<(), String> {
-    const ROUTE_METHODS: [(&str, &str); 6] = [
+    for file in files {
+        if file.language != SourceLanguage::Kotlin || !file.source.contains("io.ktor") {
+            continue;
+        }
+        let file_id = stable_node_id(GraphNodeType::File, file.relative_path)?;
+        for route in ktor_routes(file.source) {
+            let evidence = byte_range(file.relative_path, file.source, route.start, route.end);
+            let identity = format!("ktor:{}:{}:{}", file.relative_path, route.method, route.path);
+            let endpoint_id = stable_node_id(GraphNodeType::ApiEndpoint, &identity)?;
+            if nodes.iter().any(|node| node.node_id == endpoint_id) {
+                continue;
+            }
+            let label = format!("{} {}", route.method, route.path);
+            nodes.push(GraphNode {
+                node_id: endpoint_id.clone(),
+                node_type: GraphNodeType::ApiEndpoint,
+                name: label.clone(),
+                qualified_name: Some(format!("{}:{}", file.relative_path, evidence.start_line)),
+                file_path: Some(file.relative_path.to_owned()),
+                source_evidence: Some(evidence.clone()),
+                language: Some(SourceLanguage::Kotlin),
+                metadata: json!({"httpMethod": route.method, "path": route.path, "framework": "ktor"}),
+                confidence: Confidence::Inferred,
+            });
+            edges.push(make_edge(
+                &file_id,
+                GraphEdgeType::Exposes,
+                Some(endpoint_id),
+                Some(label),
+                evidence,
+                Confidence::Inferred,
+            )?);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct KtorRoute {
+    method: &'static str,
+    path: String,
+    start: usize,
+    end: usize,
+}
+
+/// Finds Ktor routing DSL calls (`get("/x") {`, bare `get {`) and resolves the
+/// path against enclosing `route("/prefix") { ... }` blocks by brace depth.
+/// Strings and comments are skipped so braces inside them do not shift scopes.
+fn ktor_routes(source: &str) -> Vec<KtorRoute> {
+    const METHODS: [(&str, &str); 7] = [
         ("get", "GET"),
         ("post", "POST"),
         ("put", "PUT"),
         ("patch", "PATCH"),
         ("delete", "DELETE"),
         ("head", "HEAD"),
+        ("options", "OPTIONS"),
     ];
-    for file in files {
-        if file.language != SourceLanguage::Kotlin || !file.source.contains("Route") {
+    let bytes = source.as_bytes();
+    let mut routes = Vec::new();
+    let mut depth = 0usize;
+    let mut scopes: Vec<(usize, String)> = Vec::new();
+    let mut pending_prefix: Option<String> = None;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
             continue;
         }
-        let file_id = stable_node_id(GraphNodeType::File, file.relative_path)?;
-        let mut line_start = 0usize;
-        for (line_index, line) in file.source.split_inclusive('\n').enumerate() {
-            let content = line.trim_end_matches(['\r', '\n']);
-            for (route_name, method) in ROUTE_METHODS {
-                let token = format!("{route_name}(");
-                let Some(token_offset) = content.find(&token) else {
-                    continue;
-                };
-                let after = &content[token_offset + token.len()..];
-                let Some(quote) = after.chars().next().filter(|c| *c == '"' || *c == '\'') else {
-                    continue;
-                };
-                let rest = &after[quote.len_utf8()..];
-                let Some(end) = rest.find(quote) else {
-                    continue;
-                };
-                let path = &rest[..end];
-                let start_byte = line_start + token_offset;
-                let end_byte = start_byte + token.len() + end + quote.len_utf8() * 2;
-                let evidence = SourceRange {
-                    relative_path: file.relative_path.to_owned(),
-                    start_byte,
-                    end_byte,
-                    start_line: line_index as u32 + 1,
-                    start_column: token_offset as u32 + 1,
-                    end_line: line_index as u32 + 1,
-                    end_column: end_byte.saturating_sub(line_start) as u32 + 1,
-                };
-                let identity = format!("ktor:{}:{}:{}", file.relative_path, method, path);
-                let endpoint_id = stable_node_id(GraphNodeType::ApiEndpoint, &identity)?;
-                if nodes.iter().any(|node| node.node_id == endpoint_id) {
-                    continue;
-                }
-                let label = format!("{method} {path}");
-                nodes.push(GraphNode {
-                    node_id: endpoint_id.clone(),
-                    node_type: GraphNodeType::ApiEndpoint,
-                    name: label.clone(),
-                    qualified_name: Some(format!("{}:{line}", file.relative_path)),
-                    file_path: Some(file.relative_path.to_owned()),
-                    source_evidence: Some(evidence.clone()),
-                    language: Some(SourceLanguage::Kotlin),
-                    metadata: json!({"httpMethod": method, "path": path, "framework": "ktor"}),
-                    confidence: Confidence::Inferred,
-                });
-                edges.push(make_edge(
-                    &file_id,
-                    GraphEdgeType::Exposes,
-                    Some(endpoint_id),
-                    Some(label),
-                    evidence,
-                    Confidence::Inferred,
-                )?);
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            index = source[index + 2..].find("*/").map_or(bytes.len(), |end| index + 2 + end + 2);
+            continue;
+        }
+        if byte == b'"' {
+            index = skip_string(bytes, index);
+            continue;
+        }
+        if byte == b'\'' {
+            index = skip_quoted(bytes, index, b'\'');
+            continue;
+        }
+        if byte == b'{' {
+            depth += 1;
+            if let Some(prefix) = pending_prefix.take() {
+                scopes.push((depth, prefix));
             }
-            line_start += line.len();
+            index += 1;
+            continue;
+        }
+        if byte == b'}' {
+            while scopes.last().is_some_and(|(scope_depth, _)| *scope_depth == depth) {
+                scopes.pop();
+            }
+            depth = depth.saturating_sub(1);
+            index += 1;
+            continue;
+        }
+        let is_word_start = byte.is_ascii_alphabetic()
+            && (index == 0 || !is_ident_byte(bytes[index - 1]) && bytes[index - 1] != b'.');
+        if !is_word_start {
+            index += 1;
+            continue;
+        }
+        let word_end = (index..bytes.len())
+            .find(|&position| !is_ident_byte(bytes[position]))
+            .unwrap_or(bytes.len());
+        let word = &source[index..word_end];
+        let method = METHODS.iter().find(|(name, _)| *name == word).map(|(_, method)| *method);
+        if method.is_some() || word == "route" {
+            if let Some((argument, brace)) = ktor_call(source, word_end) {
+                let prefix = scopes.last().map(|(_, prefix)| prefix.as_str()).unwrap_or("");
+                let path = join_route_paths(prefix, argument.unwrap_or(""));
+                match method {
+                    Some(method) => {
+                        routes.push(KtorRoute { method, path, start: index, end: brace });
+                    }
+                    None if argument.is_some() => pending_prefix = Some(path),
+                    None => {}
+                }
+            }
+        }
+        index = word_end;
+    }
+    routes
+}
+
+/// Parses `("literal") {` or ` {` after a routing call name. Returns the literal
+/// (if any) and the byte offset of the opening brace.
+fn ktor_call(source: &str, after_name: usize) -> Option<(Option<&str>, usize)> {
+    let bytes = source.as_bytes();
+    let skip_ws = |mut position: usize| {
+        while position < bytes.len() && bytes[position].is_ascii_whitespace() {
+            position += 1;
+        }
+        position
+    };
+    let mut position = skip_ws(after_name);
+    let mut argument = None;
+    if bytes.get(position) == Some(&b'(') {
+        position = skip_ws(position + 1);
+        if bytes.get(position) != Some(&b'"') {
+            return None;
+        }
+        let literal_end = source[position + 1..].find('"')? + position + 1;
+        let literal = &source[position + 1..literal_end];
+        if literal.contains('$') || literal.contains('\n') {
+            return None;
+        }
+        position = skip_ws(literal_end + 1);
+        if bytes.get(position) != Some(&b')') {
+            return None;
+        }
+        position = skip_ws(position + 1);
+        argument = Some(literal);
+    }
+    (bytes.get(position) == Some(&b'{')).then_some((argument, position))
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn skip_string(bytes: &[u8], start: usize) -> usize {
+    if bytes[start..].starts_with(b"\"\"\"") {
+        let mut position = start + 3;
+        while position + 2 < bytes.len() {
+            if &bytes[position..position + 3] == b"\"\"\"" {
+                return position + 3;
+            }
+            position += 1;
+        }
+        return bytes.len();
+    }
+    skip_quoted(bytes, start, b'"')
+}
+
+fn skip_quoted(bytes: &[u8], start: usize, quote: u8) -> usize {
+    let mut position = start + 1;
+    while position < bytes.len() {
+        match bytes[position] {
+            b'\\' => position += 2,
+            b'\n' => return position,
+            byte if byte == quote => return position + 1,
+            _ => position += 1,
         }
     }
-    Ok(())
+    bytes.len()
+}
+
+fn byte_range(relative_path: &str, source: &str, start: usize, end: usize) -> SourceRange {
+    let position = |offset: usize| {
+        let before = &source[..offset];
+        let line = before.matches('\n').count() as u32 + 1;
+        let column = (offset - before.rfind('\n').map_or(0, |newline| newline + 1)) as u32 + 1;
+        (line, column)
+    };
+    let (start_line, start_column) = position(start);
+    let (end_line, end_column) = position(end);
+    SourceRange {
+        relative_path: relative_path.to_owned(),
+        start_byte: start,
+        end_byte: end,
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+    }
 }
 
 fn analyzer(language: SourceLanguage) -> &'static dyn Analyzer {
@@ -1720,8 +1859,47 @@ class UserRepository
     }
 
     #[test]
+    fn resolves_nested_ktor_route_prefixes_and_bare_methods() {
+        let source = r#"
+import io.ktor.server.routing.Route
+fun Route.voxRoomRoutes() {
+    route("/vox/rooms") {
+        get {
+            val text = "not a } brace"
+            call.respond(mapOf("k" to "v"))
+        }
+        post { }
+        route("/{room-id}") {
+            patch { }
+            // delete("/ignored") {
+            delete { }
+        }
+    }
+    get("/") { }
+    put("email", email)
+    val x get() = 1
+}
+"#;
+        let routes: Vec<_> = super::ktor_routes(source)
+            .into_iter()
+            .map(|route| format!("{} {}", route.method, route.path))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                "GET /vox/rooms",
+                "POST /vox/rooms",
+                "PATCH /vox/rooms/{room-id}",
+                "DELETE /vox/rooms/{room-id}",
+                "GET /",
+            ]
+        );
+    }
+
+    #[test]
     fn extracts_ktor_route_endpoints_from_kotlin_routes() {
         let source = r#"
+import io.ktor.server.routing.Route
 fun Route.apiTokenRoutes(tokenService: ApiTokenService) {
     post("/token/refresh") { }
 }
