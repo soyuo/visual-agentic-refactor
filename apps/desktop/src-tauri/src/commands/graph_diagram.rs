@@ -60,11 +60,19 @@ pub fn get_graph_diagram(
             request.model.trim(),
         )
         .map_err(|error| internal(error))?;
-    Ok(stored.map(|item| GeneratedGraphDiagram {
-        diagram: item.diagram,
-        provider_id: item.provider_id,
-        model: item.model,
-        usage: ProviderUsage::default(),
+    // Older saves may predate the diagram schema; normalize them and treat an
+    // unusable record as missing so the UI offers regeneration instead of failing.
+    Ok(stored.and_then(|item| {
+        let diagram = normalize_diagram(item.diagram, None).ok()?;
+        let ids = diagram_node_ids(&diagram);
+        let allowed = ids.iter().map(String::as_str).collect();
+        validate_diagram(&diagram, &allowed).ok()?;
+        Some(GeneratedGraphDiagram {
+            diagram,
+            provider_id: item.provider_id,
+            model: item.model,
+            usage: ProviderUsage::default(),
+        })
     }))
 }
 
@@ -115,17 +123,13 @@ pub async fn generate_graph_diagram(
         .review(&review_request, &task, RetryPolicy::default())
         .await
         .map_err(provider_error)?;
-    let diagram = response
-        .structured_output
-        .get("diagram")
-        .cloned()
-        .unwrap_or(response.structured_output);
     let allowed_node_ids = request
         .snapshot
         .nodes
         .iter()
         .map(|node| node.node_id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
+    let diagram = normalize_diagram(response.structured_output, Some(&allowed_node_ids))?;
     validate_diagram(&diagram, &allowed_node_ids)?;
     persistence
         .database()?
@@ -245,6 +249,106 @@ fn compact_graph_context(snapshot: &GraphSnapshot) -> (Value, bool) {
     )
 }
 
+fn diagram_node_ids(diagram: &Value) -> Vec<String> {
+    diagram
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|node| node.get("id").and_then(Value::as_str).map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn as_layer(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|layer| layer.round() as i64)),
+        Value::String(text) => text.trim().parse::<f64>().ok().map(|layer| layer.round() as i64),
+        _ => None,
+    }
+}
+
+fn as_text(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+/// Coerces a provider or stored response into the `{title, nodes, edges}` shape
+/// the UI renders: unwraps `diagram`/JSON strings, fills optional text fields,
+/// coerces layers to integers, and drops nodes/edges that cannot be drawn
+/// (unknown ids, duplicates, self/back edges).
+fn normalize_diagram(
+    raw: Value,
+    allowed_node_ids: Option<&std::collections::BTreeSet<&str>>,
+) -> Result<Value, CommandError> {
+    let mut value = raw;
+    for _ in 0..3 {
+        let next = match &value {
+            Value::String(text) => Some(
+                serde_json::from_str::<Value>(text.trim())
+                    .map_err(|_| invalid("AI 구조도 응답을 JSON으로 해석할 수 없습니다."))?,
+            ),
+            Value::Object(map) if !map.contains_key("nodes") => map.get("diagram").cloned(),
+            _ => None,
+        };
+        match next {
+            Some(inner) => value = inner,
+            None => break,
+        }
+    }
+    let title = as_text(value.get("title")).unwrap_or_else(|| "AI 구조도".to_owned());
+    let mut seen = std::collections::BTreeSet::new();
+    let mut layers = std::collections::BTreeMap::new();
+    let mut nodes = Vec::new();
+    for node in value.get("nodes").and_then(Value::as_array).into_iter().flatten() {
+        let Some(id) = as_text(node.get("id")) else { continue };
+        if allowed_node_ids.is_some_and(|allowed| !allowed.contains(id.as_str()))
+            || !seen.insert(id.clone())
+        {
+            continue;
+        }
+        let layer = as_layer(node.get("layer")).unwrap_or(0).max(0);
+        layers.insert(id.clone(), layer);
+        nodes.push(json!({
+            "id": id,
+            "label": as_text(node.get("label")).unwrap_or_else(|| id.clone()),
+            "type": as_text(node.get("type")).unwrap_or_default(),
+            "layer": layer,
+        }));
+    }
+    if nodes.is_empty() {
+        return Err(invalid("AI 구조도 응답에 그릴 수 있는 node가 없습니다."));
+    }
+    let mut edge_keys = std::collections::BTreeSet::new();
+    let mut edges = Vec::new();
+    for edge in value.get("edges").and_then(Value::as_array).into_iter().flatten() {
+        let (Some(source), Some(target)) = (as_text(edge.get("source")), as_text(edge.get("target")))
+        else {
+            continue;
+        };
+        let (Some(source_layer), Some(target_layer)) = (layers.get(&source), layers.get(&target))
+        else {
+            continue;
+        };
+        if source_layer >= target_layer || !edge_keys.insert((source.clone(), target.clone())) {
+            continue;
+        }
+        edges.push(json!({
+            "source": source,
+            "target": target,
+            "label": as_text(edge.get("label")).unwrap_or_default(),
+        }));
+    }
+    Ok(json!({ "title": title, "nodes": nodes, "edges": edges }))
+}
+
 fn validate_diagram(
     value: &Value,
     allowed_node_ids: &std::collections::BTreeSet<&str>,
@@ -356,4 +460,39 @@ fn diagram_schema() -> serde_json::Value {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod diagram_tests {
+    use super::{normalize_diagram, validate_diagram};
+    use serde_json::json;
+
+    #[test]
+    fn normalizes_wrapped_string_diagram_with_loose_fields() {
+        let raw = json!({ "diagram": json!({
+            "nodes": [
+                { "id": "a", "layer": "0" },
+                { "id": "b", "label": "B", "layer": 1.0 },
+                { "id": "ghost", "layer": 2 },
+                { "id": "a", "layer": 3 }
+            ],
+            "edges": [
+                { "source": "a", "target": "b" },
+                { "source": "b", "target": "a" },
+                { "source": "a", "target": "ghost" }
+            ]
+        }).to_string() });
+        let allowed = ["a", "b"].into_iter().collect();
+        let diagram = normalize_diagram(raw, Some(&allowed)).unwrap();
+        assert_eq!(diagram["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(diagram["nodes"][0]["label"], "a");
+        assert_eq!(diagram["nodes"][1]["layer"], 1);
+        assert_eq!(diagram["edges"], json!([{ "source": "a", "target": "b", "label": "" }]));
+        validate_diagram(&diagram, &allowed).unwrap();
+    }
+
+    #[test]
+    fn rejects_diagram_without_nodes() {
+        assert!(normalize_diagram(json!({ "findings": [] }), None).is_err());
+    }
 }
