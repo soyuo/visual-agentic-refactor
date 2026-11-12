@@ -30,6 +30,9 @@ pub struct ReviewRequest {
     /// not an estimate of the current context's token count.
     pub max_context_tokens: u32,
     pub max_output_tokens: Option<u32>,
+    /// Optional JSON schema for structured output. `None` means the finding schema.
+    #[serde(default)]
+    pub output_schema: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,6 +306,7 @@ mod tests {
             model: "fixture-model".into(),
             max_context_tokens: 4_096,
             max_output_tokens: Some(1_024),
+            output_schema: None,
         }
     }
 

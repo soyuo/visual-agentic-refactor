@@ -153,6 +153,7 @@ pub async fn run_ai_review(
         model: model.to_owned(),
         max_context_tokens,
         max_output_tokens: Some(MAX_OUTPUT_TOKENS),
+            output_schema: None,
     };
     let outcome: Result<AiReviewResponse, CommandError> = async {
         let provider_response = provider

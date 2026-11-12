@@ -212,7 +212,7 @@ fn build_request(request: &ReviewRequest) -> Value {
         "output_config": {
             "format": {
                 "type": "json_schema",
-                "schema": finding_schema(),
+                "schema": request.output_schema.clone().unwrap_or_else(finding_schema),
             }
         }
     })
@@ -483,6 +483,7 @@ mod tests {
             model: "claude-test".into(),
             max_context_tokens: 4_096,
             max_output_tokens: Some(512),
+            output_schema: None,
         }
     }
 

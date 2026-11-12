@@ -232,7 +232,7 @@ fn build_request(request: &ReviewRequest, stream: bool) -> Value {
                 "type": "json_schema",
                 "name": "code_review",
                 "strict": true,
-                "schema": finding_schema(),
+                "schema": request.output_schema.clone().unwrap_or_else(finding_schema),
             }
         }
     });
@@ -520,6 +520,7 @@ mod tests {
             model: "gpt-test".into(),
             max_context_tokens: 4_096,
             max_output_tokens: Some(512),
+            output_schema: None,
         }
     }
 

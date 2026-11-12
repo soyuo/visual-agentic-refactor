@@ -105,6 +105,7 @@ pub async fn generate_graph_diagram(
         model: model.to_owned(),
         max_context_tokens: 32_000,
         max_output_tokens: Some(8_192),
+        output_schema: Some(diagram_schema()),
     };
     let provider_key = provider_id(request.provider);
     let provider: Box<dyn AiProvider> = match request.provider {
@@ -309,4 +310,43 @@ fn internal(message: impl Into<String>) -> CommandError {
 }
 fn provider_error(error: ProviderError) -> CommandError {
     CommandError::new(CommandErrorCode::Internal, error.message)
+}
+
+fn diagram_schema() -> serde_json::Value {
+    let string = serde_json::json!({ "type": "string" });
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "nodes", "edges"],
+        "properties": {
+            "title": string,
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["id", "label", "type", "layer"],
+                    "properties": {
+                        "id": string,
+                        "label": string,
+                        "type": string,
+                        "layer": { "type": "integer" }
+                    }
+                }
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["source", "target", "label"],
+                    "properties": {
+                        "source": string,
+                        "target": string,
+                        "label": string
+                    }
+                }
+            }
+        }
+    })
 }
