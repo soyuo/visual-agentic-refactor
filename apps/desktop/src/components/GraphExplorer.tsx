@@ -220,18 +220,26 @@ function GraphExplorer(props: GraphExplorerProps) {
     finally { setAiBusy(false); }
   }
 
-  const aiPositions = createMemo(() => {
+  const aiLayout = createMemo(() => {
     const diagram = aiDiagram()?.diagram;
     const result = new Map<string, { node: GraphDiagramNode; x: number; y: number }>();
-    if (!diagram) return result;
+    if (!diagram) return { positions: result, width: 1000, height: 600 };
     const layers = new Map<number, GraphDiagramNode[]>();
     for (const node of diagram.nodes) {
       const layer = layers.get(node.layer) ?? [];
       layer.push(node); layers.set(node.layer, layer);
     }
-    for (const [layer, nodes] of layers) nodes.forEach((node, index) => result.set(node.id, { node, x: 110 + layer * 190, y: 55 + index * 86 }));
-    return result;
+    const maxNodes = Math.max(1, ...Array.from(layers.values()).map((nodes) => nodes.length));
+    const height = Math.max(600, 120 + maxNodes * 110);
+    const width = Math.max(1000, 180 + (Math.max(0, ...layers.keys()) + 1) * 220);
+    for (const [layer, nodes] of layers) {
+      const gap = Math.min(110, (height - 120) / Math.max(1, nodes.length));
+      const startY = (height - gap * (nodes.length - 1)) / 2;
+      nodes.forEach((node, index) => result.set(node.id, { node, x: 110 + layer * 220, y: startY + index * gap }));
+    }
+    return { positions: result, width, height };
   });
+  const aiPositions = createMemo(() => aiLayout().positions);
 
   return (
     <section class="graph-explorer" aria-labelledby="graph-title" aria-busy={props.loading}>
@@ -295,17 +303,19 @@ function GraphExplorer(props: GraphExplorerProps) {
             <Show when={aiError()}><p class="project-error" role="alert">{aiError()}</p></Show>
             <Show when={aiDiagram()}>{(generated) => <section class="graph-ai-diagram" aria-label="AI 계층 구조도">
               <h2>{generated().diagram.title ?? "AI 계층 구조도"}</h2>
-              <svg class="graph-canvas" viewBox="0 0 1000 600" role="img" aria-label="AI가 생성한 계층형 구조도">
-                <For each={generated().diagram.edges}>{(edge) => { const source = aiPositions().get(edge.source); const target = aiPositions().get(edge.target); return source && target ? <g><line {...edgeEndpoints(source, target)} marker-end="url(#graph-arrow)" /><title>{edge.label}</title></g> : null; }}</For>
+              <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} role="img" aria-label="AI가 생성한 계층형 구조도">
+                <defs><marker id="ai-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="#9ca9bc" /></marker></defs>
+                <For each={generated().diagram.edges}>{(edge) => { const source = aiPositions().get(edge.source); const target = aiPositions().get(edge.target); return source && target ? <g><line {...edgeEndpoints(source, target)} marker-end="url(#ai-graph-arrow)" /><title>{edge.label}</title></g> : null; }}</For>
                 <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node" transform={`translate(${position.x} ${position.y})`}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
               </svg>
             </section>}</Show>
-            <Show when={view() !== "architecture"} fallback={
+            <Show when={view() === "architecture" && !aiDiagram()}>
               <div class="graph-state" role="status">
                 <h2>AI 호출 준비 중</h2>
                 <p>기존 분석 그래프는 구조도 영역에 표시하지 않습니다. AI 모델을 선택하고 계층 구조도 생성을 요청해 주세요.</p>
               </div>
-            }>
+            </Show>
+            <Show when={view() !== "architecture"}>
             <div class="graph-layout">
               <div class="graph-canvas-wrap">
                 <svg class="graph-canvas" viewBox="0 0 1000 600" role="group" aria-label={`${views.find((item) => item.id === view())?.label} 그래프`}
