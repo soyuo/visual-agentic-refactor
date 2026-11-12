@@ -14,6 +14,7 @@ import FileTree from "./FileTree";
 import GraphExplorer from "./GraphExplorer";
 import ApiExplorer from "./ApiExplorer";
 import AiReviewWorkspace from "./AiReviewWorkspace";
+import PullRequestWorkspace from "./PullRequestWorkspace";
 import SourcePreview from "./SourcePreview";
 
 export type CoreStatus =
@@ -62,7 +63,7 @@ interface AppShellProps {
   graphSourceLocation: { relativePath: string; line: number | null } | null;
 }
 
-type ViewId = "project" | "graph" | "api" | "review" | "fixes";
+type ViewId = "project" | "graph" | "api" | "review" | "fixes" | "pulls";
 
 const navigationItems: Array<{ id: ViewId; label: string; number: string; needsProject: boolean }> = [
   { id: "project", label: "프로젝트 탐색", number: "01", needsProject: false },
@@ -70,6 +71,7 @@ const navigationItems: Array<{ id: ViewId; label: string; number: string; needsP
   { id: "api", label: "API 목록", number: "03", needsProject: true },
   { id: "review", label: "AI 리뷰", number: "04", needsProject: true },
   { id: "fixes", label: "수정 및 검증", number: "05", needsProject: true },
+  { id: "pulls", label: "PR 관리", number: "06", needsProject: true },
 ];
 
 function getCoreStatusLabel(status: CoreStatus): string {
@@ -272,6 +274,8 @@ function AppShell(props: AppShellProps) {
             graphSnapshot={props.graphSnapshot}
             selectedGraphNodeId={selectedGraphNodeId()}
           />
+        ) : activeView() === "pulls" ? (
+          <PullRequestWorkspace project={props.project} />
         ) : <>
         <div class="content-heading">
           <div>

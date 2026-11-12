@@ -1003,3 +1003,29 @@ export async function readProjectSource(request: { projectPath: string; relative
   try { return await invoke<string>("read_project_source", { request }); }
   catch (error) { throw toAppCommandError(error); }
 }
+
+// ---- Pull request maintenance (AI conflict resolution / CI repair) ----
+export interface PullRequestCheck { name: string; state: "success" | "failure" | "pending" | "skipped"; link: string | null; }
+export interface PullRequestStatus {
+  number: number; title: string; url: string; state: string;
+  headRef: string; baseRef: string; headSha: string;
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN" | string;
+  checks: PullRequestCheck[]; checksState: "success" | "failure" | "pending" | "none";
+  workspaceReady: boolean;
+}
+export interface ConflictMergeResult { clean: boolean; conflictedFiles: string[]; }
+export interface AiChangeResult { summary: string; files: string[]; diff: string; providerId: string; model: string; }
+export interface CiFailureContext { runId: string; logExcerpt: string; candidateFiles: string[]; }
+async function prCall<T>(command: string, request: Record<string, unknown>): Promise<T> {
+  try { return await invoke<T>(command, { request }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+export const inspectPullRequest = (projectPath: string, number: number) => prCall<PullRequestStatus>("inspect_pull_request", { projectPath, number });
+export const preparePullRequestWorkspace = (projectPath: string, number: number) => prCall<PullRequestStatus>("prepare_pull_request_workspace", { projectPath, number });
+export const removePullRequestWorkspace = (projectPath: string, number: number) => prCall<void>("remove_pull_request_workspace", { projectPath, number });
+export const startPullRequestMerge = (projectPath: string, number: number) => prCall<ConflictMergeResult>("start_pull_request_merge", { projectPath, number });
+export const resolvePullRequestConflicts = (projectPath: string, number: number, provider: CredentialProvider, model: string) => prCall<AiChangeResult>("resolve_pull_request_conflicts", { projectPath, number, provider, model });
+export const previewPullRequestCiFailure = (projectPath: string, number: number) => prCall<CiFailureContext>("preview_pull_request_ci_failure", { projectPath, number });
+export const repairPullRequestCi = (projectPath: string, number: number, provider: CredentialProvider, model: string) => prCall<AiChangeResult>("repair_pull_request_ci", { projectPath, number, provider, model });
+export const pushPullRequestUpdate = (projectPath: string, number: number, message: string, expectedHeadSha: string) => prCall<{ commitSha: string }>("push_pull_request_update", { projectPath, number, message, expectedHeadSha, approved: true });
+export const mergePullRequest = (projectPath: string, number: number, expectedHeadSha: string, method: "merge" | "squash" | "rebase") => prCall<PullRequestStatus>("merge_pull_request", { projectPath, number, expectedHeadSha, method, approved: true });
