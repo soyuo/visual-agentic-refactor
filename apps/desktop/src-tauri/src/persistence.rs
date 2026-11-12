@@ -1520,11 +1520,11 @@ mod tests {
         let data_dir = temporary_database_dir();
 
         let first = ProjectDatabase::open(data_dir.clone()).expect("database should initialize");
-        assert_eq!(first.schema_version(), 3);
+        assert_eq!(first.schema_version(), super::CURRENT_SCHEMA_VERSION);
         drop(first);
 
         let second = ProjectDatabase::open(data_dir.clone()).expect("database should reopen");
-        assert_eq!(second.schema_version(), 3);
+        assert_eq!(second.schema_version(), super::CURRENT_SCHEMA_VERSION);
         drop(second);
 
         std::fs::remove_dir_all(data_dir).expect("temporary database directory should be removed");
@@ -1558,7 +1558,7 @@ mod tests {
         drop(connection);
 
         let database = ProjectDatabase::open(data_dir.clone()).unwrap();
-        assert_eq!(database.schema_version(), 6);
+        assert_eq!(database.schema_version(), super::CURRENT_SCHEMA_VERSION);
         let connection = database.connection.lock().unwrap();
         let snapshot_id: String = connection
             .query_row("SELECT snapshot_id FROM graph_snapshots", [], |row| {
@@ -1630,7 +1630,7 @@ mod tests {
 
         let database =
             ProjectDatabase::open(data_dir.clone()).expect("schema migrations should succeed");
-        assert_eq!(database.schema_version(), 6);
+        assert_eq!(database.schema_version(), super::CURRENT_SCHEMA_VERSION);
         let connection = database.connection.lock().unwrap();
         let project_name: String = connection
             .query_row("SELECT name FROM projects WHERE id = 1", [], |row| {

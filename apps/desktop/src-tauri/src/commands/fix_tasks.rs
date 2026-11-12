@@ -294,9 +294,9 @@ fn validate_patch_path(
 
 fn patch_paths(patch: &str) -> Result<Vec<String>, CommandError> {
     let mut paths = Vec::new();
-    let mut headers = patch.lines().filter(|line| line.starts_with("--- "));
-    while let Some(old_header) = headers.next() {
-        let Some(new_header) = headers.next() else {
+    let mut lines = patch.lines();
+    while let Some(old_header) = lines.find(|line| line.starts_with("--- ")) {
+        let Some(new_header) = lines.next() else {
             return Err(invalid("Malformed patch output"));
         };
         if !new_header.starts_with("+++ ") {
