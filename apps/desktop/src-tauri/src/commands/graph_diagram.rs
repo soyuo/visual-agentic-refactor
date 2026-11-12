@@ -8,6 +8,7 @@ use crate::ai_provider::{
 };
 use crate::anthropic_provider::AnthropicProvider;
 use crate::claude_code_provider::ClaudeCodeProvider;
+use crate::codex_provider::CodexProvider;
 use crate::command_error::{CommandError, CommandErrorCode};
 use crate::credentials::CredentialProvider;
 use crate::knowledge_graph::GraphSnapshot;
@@ -98,6 +99,7 @@ pub async fn generate_graph_diagram(
             Box::new(AnthropicProvider::from_keyring().map_err(provider_error)?)
         }
         CredentialProvider::ClaudeCode => Box::new(ClaudeCodeProvider::new(root)),
+        CredentialProvider::Codex => Box::new(CodexProvider::new(root)),
         CredentialProvider::GitHub => {
             return Err(invalid("GitHub는 AI provider로 사용할 수 없습니다."));
         }

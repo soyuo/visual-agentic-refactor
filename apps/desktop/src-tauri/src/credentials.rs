@@ -18,6 +18,8 @@ pub enum CredentialProvider {
     Anthropic,
     #[serde(rename = "claudeCode")]
     ClaudeCode,
+    #[serde(rename = "codex")]
+    Codex,
     #[serde(rename = "github")]
     GitHub,
 }
@@ -28,6 +30,7 @@ impl CredentialProvider {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
             Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
             Self::GitHub => "github",
         }
     }
@@ -37,6 +40,7 @@ impl CredentialProvider {
             Self::OpenAi => "OpenAI",
             Self::Anthropic => "Anthropic",
             Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex (공식 앱/CLI)",
             Self::GitHub => "GitHub",
         }
     }
@@ -239,7 +243,10 @@ fn validate_credential(credential: &str) -> Result<(), CommandError> {
 }
 
 pub fn save(provider: CredentialProvider, credential: &str) -> Result<(), CommandError> {
-    if provider == CredentialProvider::ClaudeCode {
+    if matches!(
+        provider,
+        CredentialProvider::ClaudeCode | CredentialProvider::Codex
+    ) {
         return Err(CommandError::new(
             CommandErrorCode::InvalidInput,
             "Claude Code는 API 키를 저장하지 않고 공식 CLI의 로그인 상태를 사용합니다.",
@@ -259,6 +266,9 @@ pub fn is_configured(provider: CredentialProvider) -> Result<bool, CommandError>
             .arg("--version")
             .output()
             .is_ok_and(|output| output.status.success()));
+    }
+    if provider == CredentialProvider::Codex {
+        return Ok(crate::codex_provider::is_logged_in());
     }
     match entry(provider)?.get_password() {
         Ok(_credential) => Ok(true),
@@ -291,6 +301,7 @@ pub fn statuses() -> Result<Vec<ProviderCredentialStatus>, CommandError> {
         CredentialProvider::OpenAi,
         CredentialProvider::Anthropic,
         CredentialProvider::ClaudeCode,
+        CredentialProvider::Codex,
         CredentialProvider::GitHub,
     ]
     .into_iter()

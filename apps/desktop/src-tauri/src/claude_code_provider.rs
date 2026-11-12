@@ -10,11 +10,11 @@ use crate::ai_provider::{
     ProviderResponse, ProviderUsage, RetryPolicy, ReviewRequest, ensure_not_cancelled,
     validate_request,
 };
+use crate::local_cli::resolve_command;
 use crate::state::TaskControl;
 
 const PACKAGE: &str = "@anthropic-ai/claude-code";
 
-/// Runs the official Claude Code CLI. It never reads or stores Claude Code credentials.
 pub struct ClaudeCodeProvider {
     project_root: PathBuf,
 }
@@ -49,9 +49,8 @@ impl AiProvider for ClaudeCodeProvider {
         validate_request(request, &descriptor)?;
         ensure_not_cancelled(task)?;
         ensure_cli_available().await?;
-
-        let mut command = Command::new("claude");
-        command
+        let executable = resolve_command("claude").ok_or_else(cli_unavailable_error)?;
+        let mut child = Command::new(executable)
             .current_dir(&self.project_root)
             .args([
                 "-p",
@@ -72,8 +71,9 @@ impl AiProvider for ClaudeCodeProvider {
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|_| cli_unavailable_error())?;
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| cli_unavailable_error())?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(request.context.as_bytes())
@@ -85,7 +85,6 @@ impl AiProvider for ClaudeCodeProvider {
             .await
             .map_err(|_| cli_unavailable_error())?;
         ensure_not_cancelled(task)?;
-
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
             if stderr.contains("login")
@@ -96,30 +95,37 @@ impl AiProvider for ClaudeCodeProvider {
                 launch_interactive_cli(&self.project_root);
                 return Err(ProviderError::new(
                     ProviderErrorCode::Authentication,
-                    "Claude Code 로그인 창을 열었습니다. Claude 앱의 Pro/Max 구독으로 로그인한 뒤 다시 시도해 주세요.",
+                    "Claude Code 로그인 창을 열었습니다. Claude 앱의 Pro/Max 구독 로그인을 완료한 뒤 다시 시도해 주세요.",
                 ));
             }
             return Err(ProviderError::new(
                 ProviderErrorCode::ProviderUnavailable,
-                "공식 Claude Code 실행이 실패했습니다. 설치 상태와 Claude Code 출력을 확인해 주세요.",
+                "공식 Claude Code 실행에 실패했습니다.",
             ));
         }
-
         parse_output(&output.stdout, &request.model)
     }
 }
 
 fn launch_interactive_cli(project_root: &PathBuf) {
+    let Some(executable) = resolve_command("claude") else {
+        return;
+    };
     #[cfg(windows)]
     {
-        let _ = Command::new("cmd")
+        let _ = std::process::Command::new("cmd")
             .current_dir(project_root)
-            .args(["/C", "start", "Claude Code 로그인", "claude"])
+            .args([
+                "/C",
+                "start",
+                "Claude Code 로그인",
+                executable.to_string_lossy().as_ref(),
+            ])
             .spawn();
     }
     #[cfg(not(windows))]
     {
-        let _ = Command::new("claude")
+        let _ = std::process::Command::new(executable)
             .current_dir(project_root)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -129,18 +135,20 @@ fn launch_interactive_cli(project_root: &PathBuf) {
 }
 
 async fn ensure_cli_available() -> Result<(), ProviderError> {
-    if Command::new("claude")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .is_ok_and(|status| status.success())
-    {
-        return Ok(());
+    if let Some(executable) = resolve_command("claude") {
+        if Command::new(executable)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .is_ok_and(|status| status.success())
+        {
+            return Ok(());
+        }
     }
-
-    let status = Command::new("npm")
+    let npm = resolve_command("npm").ok_or_else(cli_unavailable_error)?;
+    let status = Command::new(npm)
         .args(["install", "-g", PACKAGE])
         .status()
         .await
@@ -148,10 +156,7 @@ async fn ensure_cli_available() -> Result<(), ProviderError> {
     if status.success() {
         Ok(())
     } else {
-        Err(ProviderError::new(
-            ProviderErrorCode::ProviderUnavailable,
-            "Claude Code가 설치되지 않았습니다. Node.js/npm 설치와 권한을 확인해 주세요.",
-        ))
+        Err(cli_unavailable_error())
     }
 }
 
@@ -177,10 +182,10 @@ fn parse_output(bytes: &[u8], requested_model: &str) -> Result<ProviderResponse,
         structured_output,
         usage: ProviderUsage {
             input_tokens: usage
-                .and_then(|v| v.get("input_tokens"))
+                .and_then(|value| value.get("input_tokens"))
                 .and_then(Value::as_u64),
             output_tokens: usage
-                .and_then(|v| v.get("output_tokens"))
+                .and_then(|value| value.get("output_tokens"))
                 .and_then(Value::as_u64),
         },
     })
@@ -189,29 +194,22 @@ fn parse_output(bytes: &[u8], requested_model: &str) -> Result<ProviderResponse,
 fn invalid_response() -> ProviderError {
     ProviderError::new(
         ProviderErrorCode::InvalidResponse,
-        "Claude Code가 검토 결과 JSON을 반환하지 않았습니다.",
+        "Claude Code가 구조화된 JSON 결과를 반환하지 않았습니다.",
     )
 }
-
 fn cli_unavailable_error() -> ProviderError {
     ProviderError::new(
         ProviderErrorCode::ProviderUnavailable,
-        "공식 Claude Code를 실행할 수 없습니다. Node.js/npm과 Claude Code 설치를 확인해 주세요.",
+        "공식 Claude Code를 실행할 수 없습니다. Node.js/npm 설치와 PATH를 확인해 주세요.",
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn parses_print_mode_json_result_without_secret_material() {
-        let output = serde_json::json!({
-            "type": "result",
-            "model": "sonnet",
-            "result": "{\"findings\":[]}",
-            "usage": {"input_tokens": 12, "output_tokens": 3}
-        });
+        let output = serde_json::json!({"type":"result","model":"sonnet","result":"{\"findings\":[]}","usage":{"input_tokens":12,"output_tokens":3}});
         let response = parse_output(output.to_string().as_bytes(), "default").unwrap();
         assert_eq!(response.provider_id, "claude-code");
         assert_eq!(
