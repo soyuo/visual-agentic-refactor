@@ -40,15 +40,56 @@ function sourceRangeLabel(node: GraphNode): string {
     : sourceLabel(node);
 }
 
-function nodePosition(index: number, count: number) {
-  const columns = Math.max(1, Math.ceil(Math.sqrt(count * 1.65)));
-  const rows = Math.ceil(count / columns);
-  const cellWidth = 940 / columns;
-  const cellHeight = 540 / Math.max(1, rows);
-  return {
-    x: 30 + cellWidth * (index % columns + 0.5),
-    y: 30 + cellHeight * (Math.floor(index / columns) + 0.5),
-  };
+function hierarchicalPositions(nodes: GraphNode[], edges: { sourceNodeId: string; targetNodeId: string | null }[]) {
+  const nodeIds = new Set(nodes.map((node) => node.nodeId));
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+  for (const node of nodes) {
+    incoming.set(node.nodeId, []);
+    outgoing.set(node.nodeId, []);
+  }
+  for (const edge of edges) {
+    if (!edge.targetNodeId || !nodeIds.has(edge.sourceNodeId) || !nodeIds.has(edge.targetNodeId)) continue;
+    outgoing.get(edge.sourceNodeId)!.push(edge.targetNodeId);
+    incoming.get(edge.targetNodeId)!.push(edge.sourceNodeId);
+  }
+
+  const depth = new Map<string, number>();
+  const queue = nodes.filter((node) => incoming.get(node.nodeId)!.length === 0).map((node) => node.nodeId);
+  queue.forEach((nodeId) => depth.set(nodeId, 0));
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const sourceId = queue[cursor];
+    for (const targetId of outgoing.get(sourceId) ?? []) {
+      const nextDepth = (depth.get(sourceId) ?? 0) + 1;
+      if (!depth.has(targetId)) queue.push(targetId);
+      depth.set(targetId, Math.max(depth.get(targetId) ?? 0, nextDepth));
+    }
+  }
+
+  // Cycles have no root. Keep them visible by assigning each remaining component
+  // to the first layer after the deepest reachable node.
+  const deepest = Math.max(0, ...depth.values());
+  for (const node of nodes) {
+    if (!depth.has(node.nodeId)) depth.set(node.nodeId, deepest + 1);
+  }
+
+  const layers = new Map<number, GraphNode[]>();
+  for (const node of nodes) {
+    const layer = layers.get(depth.get(node.nodeId)!) ?? [];
+    layer.push(node);
+    layers.set(depth.get(node.nodeId)!, layer);
+  }
+
+  const positions = new Map<string, { node: GraphNode; x: number; y: number }>();
+  for (const [layerIndex, layer] of layers) {
+    const layerHeight = Math.max(86, 540 / Math.max(1, layer.length));
+    layer.forEach((node, index) => positions.set(node.nodeId, {
+      node,
+      x: 100 + layerIndex * 180,
+      y: 30 + layerHeight * (index + 0.5),
+    }));
+  }
+  return nodes.map((node) => positions.get(node.nodeId)!);
 }
 
 function edgeEndpoints(source: { x: number; y: number }, target: { x: number; y: number }) {
@@ -80,10 +121,10 @@ function GraphExplorer(props: GraphExplorerProps) {
   const nodeElements = new Map<string, SVGGElement>();
   const model = createMemo(() => props.snapshot ? buildGraphViewModel(props.snapshot, view()) : null);
   const selectedNode = createMemo(() => model()?.nodes.find((node) => node.nodeId === selectedId()) ?? null);
-  const indexedNodes = createMemo(() => model()?.nodes.map((node, index) => ({
-    node,
-    ...nodePosition(index, model()?.nodes.length ?? 0),
-  })) ?? []);
+  const indexedNodes = createMemo(() => {
+    const graph = model();
+    return graph ? hierarchicalPositions(graph.nodes, graph.edges) : [];
+  });
   const positions = createMemo(() => new Map(indexedNodes().map((item) => [item.node.nodeId, item])));
   const selectedEdges = createMemo(() => model()?.edges.filter((edge) =>
     edge.sourceNodeId === selectedId() || edge.targetNodeId === selectedId()) ?? []);
