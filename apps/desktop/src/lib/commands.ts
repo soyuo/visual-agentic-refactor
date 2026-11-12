@@ -185,8 +185,13 @@ export interface GraphDiagramNode { id: string; label: string; type: string; lay
 export interface GraphDiagramEdge { source: string; target: string; label: string; }
 export interface GeneratedGraphDiagram { diagram: { title?: string; nodes: GraphDiagramNode[]; edges: GraphDiagramEdge[] }; providerId: string; model: string; usage: ProviderUsage; }
 export interface GenerateGraphDiagramRequest { projectPath: string; snapshot: GraphSnapshot; provider: CredentialProvider; model: string; }
+export interface GetGraphDiagramRequest { projectPath: string; snapshotId: string; provider: CredentialProvider; model: string; }
 export async function generateGraphDiagram(request: GenerateGraphDiagramRequest): Promise<GeneratedGraphDiagram> {
   try { return await invoke<GeneratedGraphDiagram>("generate_graph_diagram", { request }); }
+  catch (error) { throw toAppCommandError(error); }
+}
+export async function getGraphDiagram(request: GetGraphDiagramRequest): Promise<GeneratedGraphDiagram | null> {
+  try { return await invoke<GeneratedGraphDiagram | null>("get_graph_diagram", { request }); }
   catch (error) { throw toAppCommandError(error); }
 }
 

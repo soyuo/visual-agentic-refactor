@@ -9,6 +9,7 @@ import {
   cancelTask,
   getGraphSnapshot,
   generateGraphDiagram,
+  getGraphDiagram,
   listAiModels,
   getLastProject,
   getGitStatus,
@@ -263,6 +264,13 @@ function App() {
     return generateGraphDiagram({ projectPath: currentProject.path, snapshot, provider, model });
   }
 
+  async function handleLoadAiDiagram(provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) {
+    const currentProject = project();
+    const snapshot = graphSnapshot();
+    if (!currentProject || !snapshot) return null;
+    return getGraphDiagram({ projectPath: currentProject.path, snapshotId: snapshot.snapshotId, provider, model });
+  }
+
   function handleOpenGraphSource(relativePath: string, line: number | null) {
     const entry = scanResult()?.entries.find((item) => item.relativePath === relativePath) ?? null;
     setSelectedEntry(entry);
@@ -307,6 +315,7 @@ function App() {
       onGraphViewSelected={() => void loadLatestGraph()}
       onApiViewSelected={() => void loadLatestGraph()}
       onGenerateAiDiagram={handleGenerateAiDiagram}
+      onLoadAiDiagram={handleLoadAiDiagram}
       onListAiModels={listAiModels}
       onOpenGraphSource={handleOpenGraphSource}
       revealPath={revealPath()}

@@ -15,6 +15,7 @@ interface GraphExplorerProps {
   onOpenSource: (relativePath: string, line: number | null) => void;
   onSelectionChanged: (nodeId: string | null) => void;
   onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<GeneratedGraphDiagram>;
+  onLoadAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<GeneratedGraphDiagram | null>;
   onListAiModels: (provider: "openai" | "anthropic" | "claudeCode" | "codex") => Promise<AiModelOption[]>;
 }
 
@@ -156,6 +157,19 @@ function GraphExplorer(props: GraphExplorerProps) {
   });
 
   createEffect(() => {
+    const snapshotId = props.snapshot?.snapshotId;
+    const provider = aiProvider();
+    const model = aiModel().trim();
+    if (!snapshotId || !model) {
+      setAiDiagram(null);
+      return;
+    }
+    props.onLoadAiDiagram(provider, model)
+      .then((diagram) => setAiDiagram(diagram))
+      .catch(() => setAiDiagram(null));
+  });
+
+  createEffect(() => {
     const nodes = model()?.nodes ?? [];
     const visibleIds = new Set(nodes.map((node) => node.nodeId));
     for (const nodeId of nodeElements.keys()) {
@@ -286,7 +300,12 @@ function GraphExplorer(props: GraphExplorerProps) {
                 <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node" transform={`translate(${position.x} ${position.y})`}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
               </svg>
             </section>}</Show>
-            <Show when={!aiDiagram()}>
+            <Show when={view() !== "architecture"} fallback={
+              <div class="graph-state" role="status">
+                <h2>AI 호출 준비 중</h2>
+                <p>기존 분석 그래프는 구조도 영역에 표시하지 않습니다. AI 모델을 선택하고 계층 구조도 생성을 요청해 주세요.</p>
+              </div>
+            }>
             <div class="graph-layout">
               <div class="graph-canvas-wrap">
                 <svg class="graph-canvas" viewBox="0 0 1000 600" role="group" aria-label={`${views.find((item) => item.id === view())?.label} 그래프`}
