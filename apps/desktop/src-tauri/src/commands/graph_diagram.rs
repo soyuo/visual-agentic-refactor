@@ -283,7 +283,7 @@ fn as_text(value: Option<&Value>) -> Option<String> {
 /// Coerces a provider or stored response into the `{title, nodes, edges}` shape
 /// the UI renders: unwraps `diagram`/JSON strings, fills optional text fields,
 /// coerces layers to integers, and drops nodes/edges that cannot be drawn
-/// (unknown ids, duplicates, self/back edges).
+/// (unknown ids, duplicates, self edges).
 fn normalize_diagram(
     raw: Value,
     allowed_node_ids: Option<&std::collections::BTreeSet<&str>>,
@@ -333,11 +333,11 @@ fn normalize_diagram(
         else {
             continue;
         };
-        let (Some(source_layer), Some(target_layer)) = (layers.get(&source), layers.get(&target))
-        else {
+        if !layers.contains_key(&source) || !layers.contains_key(&target) {
             continue;
-        };
-        if source_layer >= target_layer || !edge_keys.insert((source.clone(), target.clone())) {
+        }
+        // Reverse and same-layer edges are kept; the UI routes them as curves.
+        if source == target || !edge_keys.insert((source.clone(), target.clone())) {
             continue;
         }
         edges.push(json!({
@@ -396,17 +396,6 @@ fn validate_diagram(
                 .and_then(Value::as_str)
                 .map(|id| !ids.contains(id))
                 .unwrap_or(true)
-            || edge.get("source").and_then(Value::as_str).is_some_and(|source| {
-                let source_layer = nodes.iter().find(|node| {
-                    node.get("id").and_then(Value::as_str) == Some(source)
-                }).and_then(|node| node.get("layer").and_then(Value::as_i64));
-                let target_layer = edge.get("target").and_then(Value::as_str).and_then(|target| {
-                    nodes.iter().find(|node| {
-                        node.get("id").and_then(Value::as_str) == Some(target)
-                    }).and_then(|node| node.get("layer").and_then(Value::as_i64))
-                });
-                matches!((source_layer, target_layer), (Some(source), Some(target)) if source >= target)
-            })
     }) {
         return Err(invalid("AI 구조도 edge가 존재하지 않는 node를 가리킵니다."));
     }
@@ -487,7 +476,13 @@ mod diagram_tests {
         assert_eq!(diagram["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(diagram["nodes"][0]["label"], "a");
         assert_eq!(diagram["nodes"][1]["layer"], 1);
-        assert_eq!(diagram["edges"], json!([{ "source": "a", "target": "b", "label": "" }]));
+        assert_eq!(
+            diagram["edges"],
+            json!([
+                { "source": "a", "target": "b", "label": "" },
+                { "source": "b", "target": "a", "label": "" }
+            ])
+        );
         validate_diagram(&diagram, &allowed).unwrap();
     }
 

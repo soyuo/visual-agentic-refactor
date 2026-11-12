@@ -286,6 +286,9 @@ button:focus-visible {
 .graph-canvas-wrap { overflow: hidden; padding: 12px; }
 .graph-canvas { display: block; width: 100%; min-height: 360px; max-height: 620px; touch-action: none; cursor: grab; }
 .graph-canvas:active { cursor: grabbing; }
+.graph-ai-edge path { stroke: #9ca9bc; stroke-width: 1.4; }
+.graph-ai-edge-reverse path { stroke: #d4a373; stroke-dasharray: 5 3; }
+.graph-ai-edge-label { fill: #5b6578; font-size: 10px; paint-order: stroke; stroke: #fff; stroke-width: 3px; pointer-events: none; }
 .graph-edge line { stroke: #b9c3d5; stroke-width: 1.6; }
 .graph-edge.confirmed line { stroke: #4c9b68; }
 .graph-edge.inferred line { stroke: #d89a29; stroke-dasharray: 6 4; }

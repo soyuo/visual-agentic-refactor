@@ -95,6 +95,55 @@ function hierarchicalPositions(nodes: GraphNode[], edges: { sourceNodeId: string
   return nodes.map((node) => positions.get(node.nodeId)!);
 }
 
+const AI_NODE_HALF_WIDTH = 70;
+const AI_NODE_HALF_HEIGHT = 24;
+
+/**
+ * Routes an AI diagram edge as a cubic curve. Forward edges leave the right
+ * side and enter the left side, bowing upward when they skip layers so they
+ * pass over intermediate nodes. Reverse edges loop below both nodes, and
+ * same-layer edges bulge out to the right. Returns the path and label anchor.
+ */
+function aiEdgeCurve(
+  source: { node: GraphDiagramNode; x: number; y: number },
+  target: { node: GraphDiagramNode; x: number; y: number },
+) {
+  const span = target.node.layer - source.node.layer;
+  let p0: [number, number];
+  let c1: [number, number];
+  let c2: [number, number];
+  let p3: [number, number];
+  if (span > 0) {
+    p0 = [source.x + AI_NODE_HALF_WIDTH, source.y];
+    p3 = [target.x - AI_NODE_HALF_WIDTH - 2, target.y];
+    const pull = Math.max(40, (p3[0] - p0[0]) / 2);
+    const bend = span > 1 ? 45 * (span - 1) : 0;
+    c1 = [p0[0] + pull, p0[1] - bend];
+    c2 = [p3[0] - pull, p3[1] - bend];
+  } else if (span < 0) {
+    p0 = [source.x, source.y + AI_NODE_HALF_HEIGHT];
+    p3 = [target.x, target.y + AI_NODE_HALF_HEIGHT + 2];
+    const drop = Math.max(p0[1], p3[1]) + 50 + 20 * Math.abs(span);
+    c1 = [p0[0], drop];
+    c2 = [p3[0], drop];
+  } else {
+    p0 = [source.x + AI_NODE_HALF_WIDTH, source.y];
+    p3 = [target.x + AI_NODE_HALF_WIDTH + 2, target.y];
+    const bulge = p0[0] + 50 + Math.min(60, Math.abs(target.y - source.y) / 4);
+    c1 = [bulge, p0[1]];
+    c2 = [bulge, p3[1]];
+  }
+  const label = {
+    x: (p0[0] + 3 * c1[0] + 3 * c2[0] + p3[0]) / 8,
+    y: (p0[1] + 3 * c1[1] + 3 * c2[1] + p3[1]) / 8,
+  };
+  return {
+    d: `M${p0[0]},${p0[1]} C${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${p3[0]},${p3[1]}`,
+    label,
+    reverse: span < 0,
+  };
+}
+
 function edgeEndpoints(source: { x: number; y: number }, target: { x: number; y: number }) {
   const dx = target.x - source.x;
   const dy = target.y - source.y;
@@ -230,7 +279,7 @@ function GraphExplorer(props: GraphExplorerProps) {
       layer.push(node); layers.set(node.layer, layer);
     }
     const maxNodes = Math.max(1, ...Array.from(layers.values()).map((nodes) => nodes.length));
-    const height = Math.max(600, 120 + maxNodes * 110);
+    const height = Math.max(600, 200 + maxNodes * 110);
     const width = Math.max(1000, 180 + (Math.max(0, ...layers.keys()) + 1) * 220);
     for (const [layer, nodes] of layers) {
       const gap = Math.min(110, (height - 120) / Math.max(1, nodes.length));
@@ -306,7 +355,17 @@ function GraphExplorer(props: GraphExplorerProps) {
               <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => setDragOrigin(null)} role="img" aria-label="AI가 생성한 계층형 구조도">
                 <defs><marker id="ai-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="#9ca9bc" /></marker></defs>
                 <g transform={`translate(${offset().x} ${offset().y}) scale(${zoom()})`}>
-                <For each={generated().diagram.edges}>{(edge) => { const source = aiPositions().get(edge.source); const target = aiPositions().get(edge.target); return source && target ? <g><line {...edgeEndpoints(source, target)} marker-end="url(#ai-graph-arrow)" /><title>{edge.label}</title></g> : null; }}</For>
+                <For each={generated().diagram.edges}>{(edge) => {
+                  const source = aiPositions().get(edge.source);
+                  const target = aiPositions().get(edge.target);
+                  if (!source || !target) return null;
+                  const curve = aiEdgeCurve(source, target);
+                  return <g class={curve.reverse ? "graph-ai-edge graph-ai-edge-reverse" : "graph-ai-edge"}>
+                    <path d={curve.d} fill="none" marker-end="url(#ai-graph-arrow)" />
+                    <Show when={edge.label}><text class="graph-ai-edge-label" x={curve.label.x} y={curve.label.y} text-anchor="middle" dominant-baseline="middle">{edge.label.slice(0, 24)}</text></Show>
+                    <title>{edge.label}</title>
+                  </g>;
+                }}</For>
                 <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node" transform={`translate(${position.x} ${position.y})`}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
                 </g>
               </svg>
