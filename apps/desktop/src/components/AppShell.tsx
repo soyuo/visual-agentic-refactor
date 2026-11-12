@@ -195,7 +195,6 @@ function AppShell(props: AppShellProps) {
             >
               <span class="navigation-number">{item.number}</span>
               <span class="navigation-label">{item.label}</span>
-              {item.phase && <span class="navigation-phase">{item.phase}</span>}
             </button>
           ))}
         </nav>
