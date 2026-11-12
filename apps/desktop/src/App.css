@@ -1480,3 +1480,4 @@ summary:focus-visible {
 .graph-area-box { position: fixed; z-index: 40; border: 1.5px dashed var(--vr-blue-500); background: rgb(49 130 246 / 8%); pointer-events: none; }
 .graph-ai-node { cursor: pointer; }
 .graph-node.in-area rect { stroke: var(--vr-blue-500); stroke-width: 2.5; fill: var(--vr-blue-50); }
+.graph-canvas { user-select: none; -webkit-user-select: none; }

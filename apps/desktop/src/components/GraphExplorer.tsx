@@ -257,24 +257,49 @@ function GraphExplorer(props: GraphExplorerProps) {
     }
   }
 
+  // Panning starts anywhere (nodes included); it only becomes a drag after a
+  // few pixels so a plain click still selects. A drag swallows the next click.
+  let pressStart: { x: number; y: number; pointerId: number; target: SVGSVGElement } | null = null;
+  let suppressClick = false;
+
   function onPointerDown(event: PointerEvent) {
-    if ((event.target as Element).closest("[data-graph-node], [data-area-node]")) return;
-    (event.currentTarget as SVGSVGElement).setPointerCapture(event.pointerId);
+    if (event.button !== 0) return;
+    const svg = event.currentTarget as SVGSVGElement;
+    suppressClick = false;
     if (event.shiftKey) {
+      event.preventDefault();
+      svg.setPointerCapture(event.pointerId);
       setAreaBox({ x0: event.clientX, y0: event.clientY, x1: event.clientX, y1: event.clientY });
       return;
     }
-    setDragOrigin({ x: event.clientX - offset().x, y: event.clientY - offset().y });
+    pressStart = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, target: svg };
   }
 
   function onPointerMove(event: PointerEvent) {
     const box = areaBox();
     if (box) { setAreaBox({ ...box, x1: event.clientX, y1: event.clientY }); return; }
+    if (pressStart && !dragOrigin()) {
+      if (Math.hypot(event.clientX - pressStart.x, event.clientY - pressStart.y) < 4) return;
+      pressStart.target.setPointerCapture(pressStart.pointerId);
+      setDragOrigin({ x: pressStart.x - offset().x, y: pressStart.y - offset().y });
+    }
     const origin = dragOrigin();
-    if (origin) setOffset({ x: event.clientX - origin.x, y: event.clientY - origin.y });
+    if (origin) {
+      event.preventDefault();
+      setOffset({ x: event.clientX - origin.x, y: event.clientY - origin.y });
+    }
+  }
+
+  /** True once right after a drag, so node click handlers can ignore it. */
+  function consumeDrag() {
+    const dragged = suppressClick;
+    suppressClick = false;
+    return dragged;
   }
 
   function onPointerUp(event: PointerEvent) {
+    if (dragOrigin()) suppressClick = true;
+    pressStart = null;
     setDragOrigin(null);
     const box = areaBox();
     setAreaBox(null);
@@ -432,7 +457,7 @@ function GraphExplorer(props: GraphExplorerProps) {
             <Show when={aiError()}><p class="project-error" role="alert">{aiError()}</p></Show>
             <Show when={aiDiagram()}>{(generated) => <section class="graph-ai-diagram" aria-label="AI 계층 구조도">
               <h2>{generated().diagram.title ?? "AI 계층 구조도"}</h2>
-              <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} role="img" aria-label="AI가 생성한 계층형 구조도">
+              <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => { pressStart = null; setDragOrigin(null); setAreaBox(null); }} role="img" aria-label="AI가 생성한 계층형 구조도">
                 <defs><marker id="ai-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="var(--vr-grey-500)" /></marker></defs>
                 <g transform={`translate(${offset().x} ${offset().y}) scale(${zoom()})`}>
                 <For each={generated().diagram.edges}>{(edge) => {
@@ -447,7 +472,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                   </g>;
                 }}</For>
                 <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node graph-ai-node" classList={{ "in-area": inArea(node.id) }} data-area-node={node.id} transform={`translate(${position.x} ${position.y})`}
-                  onClick={(event) => event.ctrlKey || event.metaKey || event.shiftKey ? toggleArea(node.id) : setArea(inArea(node.id) && area().length === 1 ? [] : [node.id])}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
+                  onClick={(event) => consumeDrag() ? undefined : event.ctrlKey || event.metaKey || event.shiftKey ? toggleArea(node.id) : setArea(inArea(node.id) && area().length === 1 ? [] : [node.id])}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
                 </g>
               </svg>
             </section>}</Show>
@@ -461,7 +486,7 @@ function GraphExplorer(props: GraphExplorerProps) {
             <div class="graph-layout">
               <div class="graph-canvas-wrap">
                 <svg class="graph-canvas" viewBox="0 0 1000 600" role="group" aria-label={`${views.find((item) => item.id === view())?.label} 그래프`}
-                  onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => { setDragOrigin(null); setAreaBox(null); }}>
+                  onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => { pressStart = null; setDragOrigin(null); setAreaBox(null); }}>
                   <g transform={`translate(${offset().x} ${offset().y}) translate(500 300) scale(${zoom()}) translate(-500 -300)`}>
                     <defs>
                       <marker id="graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
@@ -481,7 +506,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                         transform={`translate(${x} ${y})`} role="button" tabindex={selectedId() === node.nodeId || (!selectedId() && node === model()?.nodes[0]) ? 0 : -1}
                         aria-pressed={selectedId() === node.nodeId} aria-label={`${node.name}, ${node.nodeType}, ${confidenceLabel(node.confidence)}, ${sourceLabel(node)}`}
                         ref={(element) => nodeElements.set(node.nodeId, element)}
-                        onFocus={() => setSelectedId(node.nodeId)} onClick={(event) => { if (event.ctrlKey || event.metaKey || event.shiftKey) toggleArea(node.nodeId); else setSelectedId(node.nodeId); }} onKeyDown={(event) => handleNodeKeyDown(event, node)}>
+                        onFocus={() => setSelectedId(node.nodeId)} onClick={(event) => { if (consumeDrag()) return; if (event.ctrlKey || event.metaKey || event.shiftKey) toggleArea(node.nodeId); else setSelectedId(node.nodeId); }} onKeyDown={(event) => handleNodeKeyDown(event, node)}>
                         <rect x="-42" y="-22" width="84" height="44" rx="10" />
                         <text text-anchor="middle" y="4">{node.name.length > 13 ? `${node.name.slice(0, 12)}…` : node.name}</text>
                         <title>{node.name} · {node.nodeType} · {confidenceLabel(node.confidence)}</title>
