@@ -968,58 +968,77 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                     </div>
                   </Show>
                   <Show when={props.mode === "fixes" && decision.status === "approved"}>
-                    <div class="finding-decision-row">
-                      <span role="status">수정 작업: {fixTask?.status ?? "없음"}</span>
-                      <button class="secondary-button" type="button" disabled={Boolean(fixTask) || creatingFixTaskId() !== null} onClick={() => void createFindingFixTask(finding.findingId)}>
-                        {creatingFixTaskId() === finding.findingId ? "생성 중…" : fixTask ? "작업 등록됨" : "수정 작업 등록"}
-                      </button>
-                      <Show when={fixTask} keyed>
-                        {(task) => <>
-                          <button class="secondary-button" type="button" disabled={workspaceTaskId() !== null || task.workspaceState === "ready"} onClick={() => void changeFixTaskWorkspace(task, "prepare")}>
-                            {workspaceTaskId() === task.taskId ? "준비 중…" : task.workspaceState === "ready" ? "workspace 준비됨" : "workspace 준비"}
-                          </button>
-                          <Show when={task.workspaceState === "ready"}>
-                            <button class="secondary-button" type="button" disabled={workspaceTaskId() !== null} onClick={() => void changeFixTaskWorkspace(task, "remove")}>
-                              {workspaceTaskId() === task.taskId ? "삭제 중…" : "workspace 삭제"}
-                            </button>
-                          </Show>
-                          <div class="finding-patch-controls">
-                            <Show when={task.patchPlan} keyed fallback={<button class="secondary-button" type="button" disabled={patchTaskId() !== null} onClick={() => void createPatchPlan(task, result.evidence[0]?.relativePath, result.suggestion ?? result.description)}>
-                              {patchTaskId() === task.taskId ? "계획 저장 중…" : "범위 계획 생성"}
+                    <div class="fix-steps">
+                      <section class="fix-step" data-done={fixTask?.workspaceState === "ready" ? "true" : "false"}>
+                        <header><span>1</span><strong>작업 공간</strong><em>{fixTask?.status ?? "작업 없음"}</em></header>
+                        <div class="fix-step-actions">
+                          <Show when={fixTask} fallback={
+                            <button class="primary-button" type="button" disabled={creatingFixTaskId() !== null} onClick={() => void createFindingFixTask(finding.findingId)}>
+                              {creatingFixTaskId() === finding.findingId ? "생성 중…" : "수정 작업 등록"}
                             </button>}>
-                              {(plan) => <>
-                                <span role="status">계획: {plan.files.join(", ")}</span>
-                                <button class="secondary-button" type="button" disabled={patchTaskId() !== null || task.workspaceState !== "ready" || !model().trim()} onClick={() => void generatePatch(task)}>
+                            {(task) => <Show when={task().workspaceState === "ready"} fallback={
+                              <button class="primary-button" type="button" disabled={workspaceTaskId() !== null} onClick={() => void changeFixTaskWorkspace(task(), "prepare")}>
+                                {workspaceTaskId() === task().taskId ? "준비 중…" : "격리 workspace 준비"}
+                              </button>}>
+                              <span class="status-chip ok">workspace 준비됨</span>
+                              <button class="text-button" type="button" disabled={workspaceTaskId() !== null} onClick={() => void changeFixTaskWorkspace(task(), "remove")}>
+                                {workspaceTaskId() === task().taskId ? "삭제 중…" : "workspace 삭제"}
+                              </button>
+                            </Show>}
+                          </Show>
+                        </div>
+                      </section>
+                      <Show when={fixTask?.workspaceState === "ready" ? fixTask : undefined} keyed>
+                        {(task) => <>
+                          <section class="fix-step" data-done={task.patchPlan ? "true" : "false"}>
+                            <header><span>2</span><strong>패치</strong><em>{task.patchPlan ? task.patchPlan.files.join(", ") : "범위 계획 필요"}</em></header>
+                            <Show when={task.patchPlan} fallback={
+                              <div class="fix-step-actions">
+                                <button class="primary-button" type="button" disabled={patchTaskId() !== null} onClick={() => void createPatchPlan(task, result.evidence[0]?.relativePath, result.suggestion ?? result.description)}>
+                                  {patchTaskId() === task.taskId ? "계획 저장 중…" : "범위 계획 생성"}
+                                </button>
+                              </div>}>
+                              <textarea class="patch-input" aria-label="적용할 unified diff" placeholder="AI 패치를 생성하거나 git diff 형식 패치를 붙여 넣으세요. 적용 전 내용을 확인하세요." value={patchDrafts()[task.taskId] ?? ""} onInput={(event) => setPatchDrafts((drafts) => ({ ...drafts, [task.taskId]: event.currentTarget.value }))} />
+                              <div class="fix-step-actions">
+                                <button class="secondary-button" type="button" disabled={patchTaskId() !== null || !model().trim()} onClick={() => void generatePatch(task)}>
                                   {patchTaskId() === task.taskId ? "AI 패치 생성 중…" : "AI 패치 생성"}
                                 </button>
-                                <textarea class="patch-input" aria-label="적용할 unified diff" placeholder="AI 패치를 생성하거나 git diff 형식 패치를 붙여 넣으세요. 적용 전 내용을 확인하세요." value={patchDrafts()[task.taskId] ?? ""} onInput={(event) => setPatchDrafts((drafts) => ({ ...drafts, [task.taskId]: event.currentTarget.value }))} />
-                                <button class="secondary-button" type="button" disabled={patchTaskId() !== null || task.workspaceState !== "ready" || !(patchDrafts()[task.taskId]?.trim())} onClick={() => void applyPatch(task)}>
+                                <button class="primary-button" type="button" disabled={patchTaskId() !== null || !(patchDrafts()[task.taskId]?.trim())} onClick={() => void applyPatch(task)}>
                                   {patchTaskId() === task.taskId ? "적용 중…" : "격리 workspace에 적용"}
                                 </button>
-                                <button class="secondary-button" type="button" disabled={patchTaskId() !== null || task.workspaceState !== "ready"} onClick={() => void loadPatchDiff(task)}>
+                              </div>
+                            </Show>
+                          </section>
+                          <Show when={task.patchPlan}>
+                            <section class="fix-step" data-done={patchDiffs()[task.taskId] ? "true" : "false"}>
+                              <header><span>3</span><strong>diff 확인</strong><em>{task.afterPaths.length ? task.afterPaths.join(", ") : "변경 없음"}</em></header>
+                              <div class="fix-step-actions">
+                                <button class="secondary-button" type="button" disabled={patchTaskId() !== null} onClick={() => void loadPatchDiff(task)}>
                                   {patchTaskId() === task.taskId ? "diff 조회 중…" : "현재 diff 조회"}
                                 </button>
-                                <Show when={patchDiffs()[task.taskId]}>
-                                  {(diff) => <pre class="patch-diff-preview" aria-label="격리 workspace diff">{diff()}</pre>}
-                                </Show>
-                                <Show when={task.afterPaths.length > 0}><span role="status">변경 기록: {task.afterPaths.join(", ")}</span></Show>
-                                <div class="finding-patch-controls">
-                                  <button class="secondary-button" type="button" disabled={verificationTaskId() !== null || task.workspaceState !== "ready"} onClick={() => void loadVerificationCandidates(task)}>
-                                    {verificationTaskId() === task.taskId ? "검증 후보 조회 중…" : "검증 후보 조회"}
-                                  </button>
-                                  <Show when={(verificationCandidates()[task.taskId]?.length ?? 0) > 0}>
-                                    <span role="status">{verificationCandidates()[task.taskId].map((candidate) => `${candidate.command} ${candidate.args.join(" ")}`).join(" · ")}</span>
-                                    <button class="secondary-button" type="button" disabled={verificationTaskId() !== null} onClick={() => void runVerification(task)}>
-                                      {verificationTaskId() === task.taskId ? "검증 실행 중…" : "승인 후 검증 실행"}
-                                    </button>
-                                  </Show>
-                                  <Show when={task.verification} keyed>
-                                    {(verification) => <ul class="review-diagnostics" aria-label="패치 검증 결과">{verification.results.map((result) => <li>{result.id}: {result.status}{result.error ? ` · ${result.error}` : ""}</li>)}</ul>}
-                                  </Show>
-                                </div>
-                              </>}
-                            </Show>
-                          </div>
+                              </div>
+                              <Show when={patchDiffs()[task.taskId]}>
+                                {(diff) => <pre class="patch-diff-preview" aria-label="격리 workspace diff">{diff()}</pre>}
+                              </Show>
+                            </section>
+                            <section class="fix-step" data-done={task.verification ? "true" : "false"}>
+                              <header><span>4</span><strong>검증</strong><em>{task.verification ? "실행됨" : "미실행"}</em></header>
+                              <Show when={(verificationCandidates()[task.taskId]?.length ?? 0) > 0}>
+                                <p class="fix-step-note">{verificationCandidates()[task.taskId].map((candidate) => `${candidate.command} ${candidate.args.join(" ")}`).join(" · ")}</p>
+                              </Show>
+                              <div class="fix-step-actions">
+                                <button class="secondary-button" type="button" disabled={verificationTaskId() !== null} onClick={() => void loadVerificationCandidates(task)}>
+                                  {verificationTaskId() === task.taskId ? "조회 중…" : "검증 후보 조회"}
+                                </button>
+                                <button class="primary-button" type="button" disabled={verificationTaskId() !== null || !(verificationCandidates()[task.taskId]?.length)} onClick={() => void runVerification(task)}>
+                                  {verificationTaskId() === task.taskId ? "검증 실행 중…" : "승인 후 검증 실행"}
+                                </button>
+                              </div>
+                              <Show when={task.verification} keyed>
+                                {(verification) => <ul class="review-diagnostics" aria-label="패치 검증 결과">{verification.results.map((item) => <li>{item.id}: {item.status}{item.error ? ` · ${item.error}` : ""}</li>)}</ul>}
+                              </Show>
+                            </section>
+                          </Show>
                         </>}
                       </Show>
                     </div>

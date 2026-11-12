@@ -539,3 +539,15 @@
 .empty-hint { display: grid; gap: 8px; padding: 12px 14px; border: 1px dashed var(--vr-grey-300); border-radius: var(--vr-radius-md); background: var(--vr-grey-50); }
 .empty-hint p { margin: 0; color: var(--vr-grey-700); font-size: 12px; }
 .empty-hint div { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---- Fix step cards ---- */
+.fix-steps { display: grid; gap: 8px; margin-top: 10px; }
+.fix-step { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--vr-grey-200); border-left: 3px solid var(--vr-grey-300); border-radius: var(--vr-radius-md); background: var(--vr-white); }
+.fix-step[data-done="true"] { border-left-color: var(--vr-green-500); }
+.fix-step header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fix-step header span { display: inline-grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; background: var(--vr-blue-50); color: var(--vr-blue-700); font-size: 11px; font-weight: 700; }
+.fix-step[data-done="true"] header span { background: var(--vr-green-50); color: var(--vr-green-700); }
+.fix-step header strong { font-size: 12px; }
+.fix-step header em { min-width: 0; overflow: hidden; color: var(--vr-grey-600); font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.fix-step-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.fix-step-note { margin: 0; color: var(--vr-grey-700); font-family: "JetBrains Mono", Consolas, monospace; font-size: 11px; }

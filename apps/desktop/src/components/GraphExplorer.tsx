@@ -355,7 +355,7 @@ function GraphExplorer(props: GraphExplorerProps) {
             <Show when={aiDiagram()}>{(generated) => <section class="graph-ai-diagram" aria-label="AI 계층 구조도">
               <h2>{generated().diagram.title ?? "AI 계층 구조도"}</h2>
               <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => setDragOrigin(null)} role="img" aria-label="AI가 생성한 계층형 구조도">
-                <defs><marker id="ai-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="#9ca9bc" /></marker></defs>
+                <defs><marker id="ai-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="var(--vr-grey-500)" /></marker></defs>
                 <g transform={`translate(${offset().x} ${offset().y}) scale(${zoom()})`}>
                 <For each={generated().diagram.edges}>{(edge) => {
                   const source = aiPositions().get(edge.source);
@@ -386,7 +386,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                   <g transform={`translate(${offset().x} ${offset().y}) translate(500 300) scale(${zoom()}) translate(-500 -300)`}>
                     <defs>
                       <marker id="graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
-                        <path d="M0,0 L8,4 L0,8 z" fill="#9ca9bc" />
+                        <path d="M0,0 L8,4 L0,8 z" fill="var(--vr-grey-500)" />
                       </marker>
                     </defs>
                     <For each={model()?.edges}>{(edge) => {
