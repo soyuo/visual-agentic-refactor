@@ -255,7 +255,7 @@ function App() {
     }
   }
 
-  async function handleGenerateAiDiagram(provider: "openai" | "anthropic" | "claudeCode", model: string) {
+  async function handleGenerateAiDiagram(provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) {
     const currentProject = project();
     const snapshot = graphSnapshot();
     if (!currentProject || !snapshot) throw new Error("먼저 graph를 분석해 주세요.");

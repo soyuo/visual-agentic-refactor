@@ -23,7 +23,7 @@ export interface AppInfoResponse {
   version: string;
 }
 
-export type CredentialProvider = "openai" | "anthropic" | "claudeCode" | "github";
+export type CredentialProvider = "openai" | "anthropic" | "claudeCode" | "codex" | "github";
 export type LocalRuntimeKind = "llamaCpp" | "ollama";
 export interface LocalLlmRequest { runtime: LocalRuntimeKind; executablePath: string; modelPath: string; prompt: string; timeoutMs?: number; args?: string[]; }
 export interface LocalLlmResponse { text: string; structured: unknown; }

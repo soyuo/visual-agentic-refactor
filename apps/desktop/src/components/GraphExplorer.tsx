@@ -14,7 +14,7 @@ interface GraphExplorerProps {
   onAnalyze: () => void;
   onOpenSource: (relativePath: string, line: number | null) => void;
   onSelectionChanged: (nodeId: string | null) => void;
-  onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode", model: string) => Promise<GeneratedGraphDiagram>;
+  onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<GeneratedGraphDiagram>;
 }
 
 const views: { id: GraphViewKind; label: string }[] = [
@@ -119,7 +119,7 @@ function GraphExplorer(props: GraphExplorerProps) {
   const [zoom, setZoom] = createSignal(1);
   const [offset, setOffset] = createSignal({ x: 0, y: 0 });
   const [dragOrigin, setDragOrigin] = createSignal<{ x: number; y: number } | null>(null);
-  const [aiProvider, setAiProvider] = createSignal<"openai" | "anthropic" | "claudeCode">("openai");
+  const [aiProvider, setAiProvider] = createSignal<"openai" | "anthropic" | "claudeCode" | "codex">("codex");
   const [aiModel, setAiModel] = createSignal("");
   const [aiDiagram, setAiDiagram] = createSignal<GeneratedGraphDiagram | null>(null);
   const [aiBusy, setAiBusy] = createSignal(false);
@@ -247,10 +247,11 @@ function GraphExplorer(props: GraphExplorerProps) {
             </div>
           }>
             <div class="graph-ai-controls">
-              <select value={aiProvider()} onChange={(event) => setAiProvider(event.currentTarget.value as "openai" | "anthropic" | "claudeCode")} aria-label="AI 제공자">
+              <select value={aiProvider()} onChange={(event) => setAiProvider(event.currentTarget.value as "openai" | "anthropic" | "claudeCode" | "codex")} aria-label="AI 제공자">
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="claudeCode">Claude Code</option>
+                <option value="codex">Codex (공식 앱)</option>
               </select>
               <input value={aiModel()} onInput={(event) => setAiModel(event.currentTarget.value)} placeholder="모델 ID" aria-label="AI 모델 ID" />
               <button class="secondary-button" type="button" disabled={aiBusy() || !aiModel().trim()} onClick={() => void generateAiDiagram()}>{aiBusy() ? "AI 생성 중..." : "AI로 계층 구조도 생성"}</button>

@@ -49,6 +49,7 @@ const providers: Array<{ id: CredentialProvider; label: string }> = [
   { id: "openai", label: "OpenAI" },
   { id: "anthropic", label: "Anthropic" },
   { id: "claudeCode", label: "Claude Code (공식 앱)" },
+  { id: "codex", label: "Codex (공식 앱/CLI)" },
 ];
 
 interface AiReviewWorkspaceProps {
@@ -672,7 +673,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
           <span class="muted-message">검토 시 CLI 설치 여부 확인</span>
         </div>
 
-        <Show when={selectedProvider() !== "claudeCode"}>
+        <Show when={selectedProvider() !== "claudeCode" && selectedProvider() !== "codex"}>
         <form class="credential-form" onSubmit={(event) => { event.preventDefault(); void saveSelectedCredential(); }}>
           <label for="credential-provider">제공자</label>
           <select
@@ -703,6 +704,9 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         </Show>
         <Show when={selectedProvider() === "claudeCode"}>
           <p class="muted-message">검토를 시작하면 Claude Code가 없을 때 npm으로 공식 CLI를 설치합니다. 로그인이 필요하면 Claude Code 터미널을 열어 Claude 앱의 Pro/Max 구독 로그인을 직접 완료해 주세요.</p>
+        </Show>
+        <Show when={selectedProvider() === "codex"}>
+          <p class="muted-message">공식 Codex CLI의 ChatGPT 로그인 상태를 사용합니다. 앱이 token 파일이나 쿠키를 읽지 않고 `codex login status`로 상태를 확인한 뒤 `codex exec`를 호출합니다.</p>
         </Show>
 
         {error() && <p class="inline-error" role="alert">{error()}</p>}
