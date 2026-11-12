@@ -212,14 +212,14 @@ function App() {
     if (currentProject) void scanOpenedProject(currentProject.path);
   }
 
-  async function loadLatestGraph() {
+  async function loadLatestGraph(): Promise<GraphSnapshot | null> {
     const currentProject = project();
     const requestId = ++graphRequestId;
     if (!currentProject) {
       setGraphSnapshot(null);
       setGraphError(null);
       setIsGraphLoading(false);
-      return;
+      return null;
     }
 
     setIsGraphLoading(true);
@@ -231,8 +231,10 @@ function App() {
         ? await getGraphSnapshot(currentProject.path, latest.snapshotId)
         : null;
       if (requestId === graphRequestId) setGraphSnapshot(snapshot);
+      return snapshot;
     } catch (error: unknown) {
       if (requestId === graphRequestId) setGraphError(toAppCommandError(error).message);
+      return null;
     } finally {
       if (requestId === graphRequestId) setIsGraphLoading(false);
     }
@@ -254,6 +256,13 @@ function App() {
       if (requestId === graphRequestId) setGraphError(toAppCommandError(error).message);
     } finally {
       if (requestId === graphRequestId) setIsGraphLoading(false);
+    }
+  }
+
+  async function handleApiViewSelected() {
+    const snapshot = await loadLatestGraph();
+    if (!snapshot || !snapshot.nodes.some((node) => node.nodeType === "apiEndpoint")) {
+      await handleAnalyzeGraph();
     }
   }
 
@@ -313,7 +322,7 @@ function App() {
       graphError={graphError()}
       onAnalyzeGraph={() => void handleAnalyzeGraph()}
       onGraphViewSelected={() => void loadLatestGraph()}
-      onApiViewSelected={() => void loadLatestGraph()}
+      onApiViewSelected={() => void handleApiViewSelected()}
       onGenerateAiDiagram={handleGenerateAiDiagram}
       onLoadAiDiagram={handleLoadAiDiagram}
       onListAiModels={listAiModels}
