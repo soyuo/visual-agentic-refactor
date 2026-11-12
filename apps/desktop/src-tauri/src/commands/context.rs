@@ -195,6 +195,7 @@ fn selection_matches_scope(scope: &ReviewContextScope, selection: &ReviewSelecti
         (
             ReviewContextScope::GraphNode {
                 node_id: scope_node,
+                ..
             },
             ReviewSelection::GraphNode {
                 node_id: selected_node,
@@ -405,7 +406,7 @@ pub fn preview_review_context(
     let graph = latest_graph(&database, &root)?;
     let selected_path = match &request.scope {
         ReviewContextScope::File { relative_path, .. } => normalize_relative(relative_path)?,
-        ReviewContextScope::GraphNode { node_id } => {
+        ReviewContextScope::GraphNode { node_id, .. } => {
             let graph = graph
                 .as_ref()
                 .ok_or_else(|| invalid("저장된 분석 그래프가 없습니다."))?;
@@ -516,15 +517,19 @@ fn related_source_paths(
     let Some(graph) = graph else {
         return Vec::new();
     };
-    let selected_node_id = match scope {
-        ReviewContextScope::GraphNode { node_id } => Some(node_id.as_str()),
-        ReviewContextScope::File { .. } => None,
+    let (selected_node_id, extra_node_ids): (Option<&str>, &[String]) = match scope {
+        ReviewContextScope::GraphNode {
+            node_id,
+            extra_node_ids,
+        } => (Some(node_id.as_str()), extra_node_ids.as_slice()),
+        ReviewContextScope::File { .. } => (None, &[]),
     };
     let seeds: HashSet<&str> = graph
         .nodes
         .iter()
         .filter(|node| {
             selected_node_id == Some(node.node_id.as_str())
+                || extra_node_ids.iter().any(|id| id == &node.node_id)
                 || node
                     .file_path
                     .as_deref()

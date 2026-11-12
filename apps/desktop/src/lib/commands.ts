@@ -218,7 +218,7 @@ export async function compareGraphSnapshot(request: CompareGraphSnapshotRequest)
 
 export type ReviewContextScope =
   | { file: { relativePath: string; range: SourceRange | null } }
-  | { graphNode: { nodeId: string } };
+  | { graphNode: { nodeId: string; extraNodeIds?: string[] } };
 
 export interface PreviewReviewContextRequest {
   projectPath: string;

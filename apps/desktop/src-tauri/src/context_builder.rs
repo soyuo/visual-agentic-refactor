@@ -20,6 +20,9 @@ pub enum ReviewContextScope {
     },
     GraphNode {
         node_id: String,
+        /// Other nodes in a user-selected diagram area reviewed together.
+        #[serde(default)]
+        extra_node_ids: Vec<String>,
     },
 }
 
@@ -275,7 +278,7 @@ fn resolve_scope<'a>(
             }
             Ok((relative_path.replace('\\', "/"), range.clone(), None))
         }
-        ReviewContextScope::GraphNode { node_id } => {
+        ReviewContextScope::GraphNode { node_id, .. } => {
             let graph = graph.ok_or_else(|| "저장된 분석 그래프가 없습니다.".to_owned())?;
             let node = graph
                 .nodes
@@ -962,6 +965,7 @@ mod tests {
             project_name: "sample",
             scope: &ReviewContextScope::GraphNode {
                 node_id: "method:main".to_owned(),
+                extra_node_ids: Vec::new(),
             },
             graph: Some(&graph),
             sources: &sources,
@@ -1037,6 +1041,7 @@ mod tests {
             project_name: "sample",
             scope: &ReviewContextScope::GraphNode {
                 node_id: "method:main".to_owned(),
+                extra_node_ids: Vec::new(),
             },
             graph: Some(&graph),
             sources: &sources,
