@@ -1,4 +1,5 @@
 import { createEffect, createSignal, For, onMount, Show } from "solid-js";
+import Dropdown from "./Dropdown";
 import { listen } from "@tauri-apps/api/event";
 import {
   cancelTask,
@@ -665,34 +666,29 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
       <section class="ai-settings-card review-setup-bar" aria-label="리뷰 제공자와 모델">
         <div class="review-setup-field">
           <label for="credential-provider">제공자</label>
-          <select
+          <Dropdown
             id="credential-provider"
             value={selectedProvider()}
             disabled={busyProvider() !== null}
-            onChange={(event) => {
-              setSelectedProvider(event.currentTarget.value as CredentialProvider);
+            options={providers.map((provider) => ({ value: provider.id, label: provider.label }))}
+            onChange={(value) => {
+              setSelectedProvider(value as CredentialProvider);
               setCredential("");
             }}
-          >
-            {providers.map((provider) => <option value={provider.id}>{provider.label}</option>)}
-          </select>
+          />
         </div>
         <div class="review-setup-field">
           <label for="review-model">모델 ID</label>
-          <input
+          <Dropdown
             id="review-model"
-            type="text"
-            list="review-model-options"
+            editable
             value={model()}
-            maxlength={128}
-            autocomplete="off"
-            spellcheck={false}
+            maxLength={128}
             placeholder="목록에서 고르거나 직접 입력"
-            onInput={(event) => setModel(event.currentTarget.value)}
+            emptyText="일치하는 모델이 없습니다. 입력한 ID를 그대로 사용합니다."
+            options={modelOptions().map((option) => ({ value: option.id, label: option.displayName, hint: option.id }))}
+            onChange={setModel}
           />
-          <datalist id="review-model-options">
-            <For each={modelOptions()}>{(option) => <option value={option.id}>{option.displayName}</option>}</For>
-          </datalist>
         </div>
         <span class="status-chip" classList={{ ok: providerReady() }}>
           {providerReady() ? "연결됨" : "연결 필요"}
@@ -891,10 +887,17 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         <Show when={sessionError()}><p class="inline-error" role="alert">{sessionError()}</p></Show>
         <Show when={sessions().length > 0}>
           <label for="saved-review-session">리뷰 세션</label>
-          <select id="saved-review-session" value={selectedSessionId()} onChange={(event) => void loadSession(event.currentTarget.value)}>
-            <option value="">세션 선택</option>
-            {sessions().map((session) => <option value={session.sessionId}>{new Date(session.createdAtUnixMs).toLocaleString()} · {session.validationState} · {session.findingCount}개 finding</option>)}
-          </select>
+          <Dropdown
+            id="saved-review-session"
+            value={selectedSessionId()}
+            placeholder="세션 선택"
+            options={sessions().map((session) => ({
+              value: session.sessionId,
+              label: new Date(session.createdAtUnixMs).toLocaleString(),
+              hint: `${session.validationState} · ${session.findingCount}개 finding`,
+            }))}
+            onChange={(value) => void loadSession(value)}
+          />
         </Show>
         <Show when={!sessionLoading() && !sessionError() && sessions().length === 0}>
           <p class="muted-message">저장된 리뷰가 없습니다. 미리보기를 확인하고 리뷰를 시작하세요.</p>

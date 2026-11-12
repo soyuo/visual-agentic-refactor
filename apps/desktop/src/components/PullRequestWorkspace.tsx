@@ -1,4 +1,5 @@
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import Dropdown from "./Dropdown";
 import {
   inspectPullRequest,
   listAiModels,
@@ -265,14 +266,14 @@ function PullRequestWorkspace(props: Props) {
         </div>
         <div class="review-setup-field">
           <label for="pr-provider">AI 제공자</label>
-          <select id="pr-provider" value={provider()} onChange={(event) => setProvider(event.currentTarget.value as AiProvider)}>
-            {providers.map((item) => <option value={item.id}>{item.label}</option>)}
-          </select>
+          <Dropdown id="pr-provider" value={provider()} options={providers.map((item) => ({ value: item.id, label: item.label }))} onChange={(value) => setProvider(value as AiProvider)} />
         </div>
         <div class="review-setup-field">
           <label for="pr-model">모델 ID</label>
-          <input id="pr-model" type="text" list="pr-model-options" value={model()} maxlength={128} onInput={(event) => setModel(event.currentTarget.value)} />
-          <datalist id="pr-model-options"><For each={modelOptions()}>{(option) => <option value={option.id}>{option.displayName}</option>}</For></datalist>
+          <Dropdown id="pr-model" editable value={model()} maxLength={128} placeholder="목록에서 고르거나 직접 입력"
+            emptyText="일치하는 모델이 없습니다. 입력한 ID를 그대로 사용합니다."
+            options={modelOptions().map((option) => ({ value: option.id, label: option.displayName, hint: option.id }))}
+            onChange={setModel} />
         </div>
         <button class="primary-button" type="button" disabled={Boolean(busy()) || !numberInput()} onClick={() => void refresh()}>
           {busy() === "상태 조회" ? "조회 중…" : "상태 불러오기"}
@@ -388,11 +389,9 @@ function PullRequestWorkspace(props: Props) {
           <section class="fix-step" data-done={pr.state === "MERGED" ? "true" : "false"}>
             <header><span>5</span><strong>병합</strong><em>{canMerge() ? "병합 가능" : "충돌이 없고 CI가 성공해야 병합할 수 있습니다"}</em></header>
             <div class="fix-step-actions">
-              <select aria-label="병합 방식" value={mergeMethod()} onChange={(event) => setMergeMethod(event.currentTarget.value as "merge" | "squash" | "rebase")}>
-                <option value="merge">merge commit</option>
-                <option value="squash">squash</option>
-                <option value="rebase">rebase</option>
-              </select>
+              <Dropdown ariaLabel="병합 방식" value={mergeMethod()}
+                options={[{ value: "merge", label: "merge commit" }, { value: "squash", label: "squash" }, { value: "rebase", label: "rebase" }]}
+                onChange={(value) => setMergeMethod(value as "merge" | "squash" | "rebase")} />
               <button class="primary-button" type="button" disabled={Boolean(busy()) || !canMerge()} onClick={() => void merge()}>
                 {busy() === "PR 병합" ? "병합 중…" : "승인 후 병합"}
               </button>

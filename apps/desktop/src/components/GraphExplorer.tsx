@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
+import Dropdown from "./Dropdown";
 import type { AiModelOption, GeneratedGraphDiagram, GraphDiagramNode, GraphNode, GraphSnapshot } from "../lib/commands";
 import {
   buildGraphViewModel,
@@ -338,17 +339,25 @@ function GraphExplorer(props: GraphExplorerProps) {
             </div>
           }>
             <div class="graph-ai-controls">
-              <select value={aiProvider()} onChange={(event) => setAiProvider(event.currentTarget.value as "openai" | "anthropic" | "claudeCode" | "codex")} aria-label="AI 제공자">
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="claudeCode">Claude Code</option>
-                <option value="codex">Codex (공식 앱)</option>
-              </select>
-              <select value={aiModel()} onChange={(event) => setAiModel(event.currentTarget.value)} disabled={aiModelsLoading() || aiModels().length === 0} aria-label="AI 모델">
-                <Show when={aiModelsLoading()}><option value="">모델 목록 조회 중...</option></Show>
-                <Show when={!aiModelsLoading() && aiModels().length === 0}><option value="">모델 목록이 없습니다</option></Show>
-                <For each={aiModels()}>{(model) => <option value={model.id}>{model.displayName} ({model.id})</option>}</For>
-              </select>
+              <Dropdown
+                ariaLabel="AI 제공자"
+                value={aiProvider()}
+                options={[
+                  { value: "openai", label: "OpenAI" },
+                  { value: "anthropic", label: "Anthropic" },
+                  { value: "claudeCode", label: "Claude Code" },
+                  { value: "codex", label: "Codex (공식 앱)" },
+                ]}
+                onChange={(value) => setAiProvider(value as "openai" | "anthropic" | "claudeCode" | "codex")}
+              />
+              <Dropdown
+                ariaLabel="AI 모델"
+                value={aiModel()}
+                disabled={aiModelsLoading() || aiModels().length === 0}
+                placeholder={aiModelsLoading() ? "모델 목록 조회 중..." : aiModels().length === 0 ? "모델 목록이 없습니다" : "모델 선택"}
+                options={aiModels().map((model) => ({ value: model.id, label: model.displayName, hint: model.id }))}
+                onChange={setAiModel}
+              />
               <button class="secondary-button" type="button" disabled={aiBusy() || !aiModel()} onClick={() => void generateAiDiagram()}>{aiBusy() ? "AI 생성 중..." : "AI로 계층 구조도 생성"}</button>
             </div>
             <Show when={aiError()}><p class="project-error" role="alert">{aiError()}</p></Show>
