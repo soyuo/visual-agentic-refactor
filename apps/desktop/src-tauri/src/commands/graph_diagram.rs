@@ -90,7 +90,7 @@ pub async fn generate_graph_diagram(
     let (graph_context, truncated) = compact_graph_context(&request.snapshot);
     let _ = truncated;
     let context = format!(
-        "Create a hierarchical architecture diagram from analyzer facts only.\nReturn JSON exactly as {{\"title\":string,\"nodes\":[{{\"id\":string,\"label\":string,\"type\":string,\"layer\":number}}],\"edges\":[{{\"source\":string,\"target\":string,\"label\":string}}]}}.\nUse 0 for roots and increasing integers downstream. Do not invent nodes or edges.\nAnalyzer graph:\n{}",
+        "이 프로젝트의 시스템 아키텍처를 좌측에서 우측으로 이어지는 계층형 다이어그램으로 그려줘. analyzer가 제공한 실제 노드와 관계만 사용하고, 루트는 layer 0, 의존 대상은 더 큰 layer에 배치해. 연결 관계를 빠뜨리지 말고, 아래 JSON 형식으로만 반환해: {{\"title\":string,\"nodes\":[{{\"id\":string,\"label\":string,\"type\":string,\"layer\":number}}],\"edges\":[{{\"source\":string,\"target\":string,\"label\":string}}]}}.\nAnalyzer facts:\n{}",
         serde_json::to_string(&graph_context)
             .map_err(|_| internal("graph context를 만들 수 없습니다."))?
     );
