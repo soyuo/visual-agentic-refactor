@@ -12,6 +12,7 @@ import type {
 } from "../lib/commands";
 import FileTree from "./FileTree";
 import GraphExplorer from "./GraphExplorer";
+import ApiExplorer from "./ApiExplorer";
 import AiReviewWorkspace from "./AiReviewWorkspace";
 
 export type CoreStatus =
@@ -51,6 +52,7 @@ interface AppShellProps {
   graphError: string | null;
   onAnalyzeGraph: () => void;
   onGraphViewSelected: () => void;
+  onApiViewSelected: () => void;
   onOpenGraphSource: (relativePath: string, line: number | null) => void;
   revealPath: string | null;
   graphSourceLocation: { relativePath: string; line: number | null } | null;
@@ -59,9 +61,9 @@ interface AppShellProps {
 const navigationItems = [
   { label: "프로젝트 탐색", number: "01", active: true },
   { label: "코드 그래프", number: "02", active: true },
-  { label: "API 목록", number: "03", phase: "준비 중" },
+  { label: "API 목록", number: "03", active: true },
   { label: "AI 리뷰", number: "04", active: true },
-  { label: "수정 및 검증", number: "05", phase: "준비 중" },
+  { label: "수정 및 검증", number: "05", active: true },
 ];
 
 function getCoreStatusLabel(status: CoreStatus): string {
@@ -114,7 +116,7 @@ function getGitStatusLabel(status: GitStatusResponse["state"]): string {
 }
 
 function AppShell(props: AppShellProps) {
-  const [activeView, setActiveView] = createSignal<"project" | "graph" | "review">("project");
+  const [activeView, setActiveView] = createSignal<"project" | "graph" | "api" | "review" | "fixes">("project");
   const [selectedGraphNodeId, setSelectedGraphNodeId] = createSignal<string | null>(null);
   const detectionRows = () => {
     const detection = props.scanResult?.projectDetection;
@@ -168,17 +170,22 @@ function AppShell(props: AppShellProps) {
           {navigationItems.map((item) => (
             <button
               class="navigation-item"
-              classList={{ active: item.active && activeView() === "project" || item.label === "코드 그래프" && activeView() === "graph" || item.label === "AI 리뷰" && activeView() === "review" }}
+              classList={{ active: item.active && ((item.label === "프로젝트 탐색" && activeView() === "project") || (item.label === "코드 그래프" && activeView() === "graph") || (item.label === "API 목록" && activeView() === "api") || (item.label === "AI 리뷰" && activeView() === "review") || (item.label === "수정 및 검증" && activeView() === "fixes")) }}
               type="button"
               disabled={!item.active}
-              aria-current={item.label === "코드 그래프" && activeView() === "graph" || item.label === "프로젝트 탐색" && activeView() === "project" || item.label === "AI 리뷰" && activeView() === "review" ? "page" : undefined}
+              aria-current={((item.label === "코드 그래프" && activeView() === "graph") || (item.label === "API 목록" && activeView() === "api") || (item.label === "프로젝트 탐색" && activeView() === "project") || (item.label === "AI 리뷰" && activeView() === "review") || (item.label === "수정 및 검증" && activeView() === "fixes")) ? "page" : undefined}
               onClick={() => {
                 if (item.label === "프로젝트 탐색") setActiveView("project");
                 if (item.label === "코드 그래프") {
                   setActiveView("graph");
                   props.onGraphViewSelected();
                 }
+                if (item.label === "API 목록") {
+                  setActiveView("api");
+                  props.onApiViewSelected();
+                }
                 if (item.label === "AI 리뷰") setActiveView("review");
+                if (item.label === "수정 및 검증") setActiveView("fixes");
               }}
               title={item.active ? undefined : "아직 제공되지 않는 화면입니다."}
             >
@@ -213,7 +220,26 @@ function AppShell(props: AppShellProps) {
               props.onOpenGraphSource(relativePath, line);
             }}
           />
+        ) : activeView() === "api" ? (
+          <ApiExplorer
+            snapshot={props.graphSnapshot}
+            loading={props.isGraphLoading}
+            error={props.graphError}
+            projectAvailable={props.project !== null}
+            onAnalyze={props.onAnalyzeGraph}
+            onOpenSource={(relativePath, line) => {
+              setActiveView("project");
+              props.onOpenGraphSource(relativePath, line);
+            }}
+          />
         ) : activeView() === "review" ? (
+          <AiReviewWorkspace
+            project={props.project}
+            selectedEntry={props.selectedEntry}
+            graphSnapshot={props.graphSnapshot}
+            selectedGraphNodeId={selectedGraphNodeId()}
+          />
+        ) : activeView() === "fixes" ? (
           <AiReviewWorkspace
             project={props.project}
             selectedEntry={props.selectedEntry}
