@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
-import type { GraphNode, GraphSnapshot } from "../lib/commands";
+import type { GeneratedGraphDiagram, GraphDiagramNode, GraphNode, GraphSnapshot } from "../lib/commands";
 import {
   buildGraphViewModel,
   nextGraphNodeId,
@@ -14,6 +14,7 @@ interface GraphExplorerProps {
   onAnalyze: () => void;
   onOpenSource: (relativePath: string, line: number | null) => void;
   onSelectionChanged: (nodeId: string | null) => void;
+  onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode", model: string) => Promise<GeneratedGraphDiagram>;
 }
 
 const views: { id: GraphViewKind; label: string }[] = [
@@ -118,6 +119,11 @@ function GraphExplorer(props: GraphExplorerProps) {
   const [zoom, setZoom] = createSignal(1);
   const [offset, setOffset] = createSignal({ x: 0, y: 0 });
   const [dragOrigin, setDragOrigin] = createSignal<{ x: number; y: number } | null>(null);
+  const [aiProvider, setAiProvider] = createSignal<"openai" | "anthropic" | "claudeCode">("openai");
+  const [aiModel, setAiModel] = createSignal("");
+  const [aiDiagram, setAiDiagram] = createSignal<GeneratedGraphDiagram | null>(null);
+  const [aiBusy, setAiBusy] = createSignal(false);
+  const [aiError, setAiError] = createSignal<string | null>(null);
   const nodeElements = new Map<string, SVGGElement>();
   const model = createMemo(() => props.snapshot ? buildGraphViewModel(props.snapshot, view()) : null);
   const selectedNode = createMemo(() => model()?.nodes.find((node) => node.nodeId === selectedId()) ?? null);
@@ -173,6 +179,28 @@ function GraphExplorer(props: GraphExplorerProps) {
     if (origin) setOffset({ x: event.clientX - origin.x, y: event.clientY - origin.y });
   }
 
+  async function generateAiDiagram() {
+    if (!props.snapshot || !aiModel().trim() || aiBusy()) return;
+    if (!window.confirm("analyzer 구조 메타데이터만 선택한 AI 제공자에게 전송해 계층형 구조도를 생성합니다. 소스 원문과 API 키는 전송하지 않습니다. 계속할까요?")) return;
+    setAiBusy(true); setAiError(null);
+    try { setAiDiagram(await props.onGenerateAiDiagram(aiProvider(), aiModel().trim())); }
+    catch (error) { setAiError(error instanceof Error ? error.message : String(error)); }
+    finally { setAiBusy(false); }
+  }
+
+  const aiPositions = createMemo(() => {
+    const diagram = aiDiagram()?.diagram;
+    const result = new Map<string, { node: GraphDiagramNode; x: number; y: number }>();
+    if (!diagram) return result;
+    const layers = new Map<number, GraphDiagramNode[]>();
+    for (const node of diagram.nodes) {
+      const layer = layers.get(node.layer) ?? [];
+      layer.push(node); layers.set(node.layer, layer);
+    }
+    for (const [layer, nodes] of layers) nodes.forEach((node, index) => result.set(node.id, { node, x: 110 + layer * 190, y: 55 + index * 86 }));
+    return result;
+  });
+
   return (
     <section class="graph-explorer" aria-labelledby="graph-title" aria-busy={props.loading}>
       <header class="graph-heading">
@@ -218,6 +246,23 @@ function GraphExplorer(props: GraphExplorerProps) {
               <p>다른 그래프 종류를 선택하거나 프로젝트를 다시 분석해 보세요.</p>
             </div>
           }>
+            <div class="graph-ai-controls">
+              <select value={aiProvider()} onChange={(event) => setAiProvider(event.currentTarget.value as "openai" | "anthropic" | "claudeCode")} aria-label="AI 제공자">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="claudeCode">Claude Code</option>
+              </select>
+              <input value={aiModel()} onInput={(event) => setAiModel(event.currentTarget.value)} placeholder="모델 ID" aria-label="AI 모델 ID" />
+              <button class="secondary-button" type="button" disabled={aiBusy() || !aiModel().trim()} onClick={() => void generateAiDiagram()}>{aiBusy() ? "AI 생성 중..." : "AI로 계층 구조도 생성"}</button>
+            </div>
+            <Show when={aiError()}><p class="project-error" role="alert">{aiError()}</p></Show>
+            <Show when={aiDiagram()}>{(generated) => <section class="graph-ai-diagram" aria-label="AI 계층 구조도">
+              <h2>{generated().diagram.title ?? "AI 계층 구조도"}</h2>
+              <svg class="graph-canvas" viewBox="0 0 1000 600" role="img" aria-label="AI가 생성한 계층형 구조도">
+                <For each={generated().diagram.edges}>{(edge) => { const source = aiPositions().get(edge.source); const target = aiPositions().get(edge.target); return source && target ? <g><line {...edgeEndpoints(source, target)} marker-end="url(#graph-arrow)" /><title>{edge.label}</title></g> : null; }}</For>
+                <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node" transform={`translate(${position.x} ${position.y})`}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
+              </svg>
+            </section>}</Show>
             <div class="graph-layout">
               <div class="graph-canvas-wrap">
                 <svg class="graph-canvas" viewBox="0 0 1000 600" role="group" aria-label={`${views.find((item) => item.id === view())?.label} 그래프`}

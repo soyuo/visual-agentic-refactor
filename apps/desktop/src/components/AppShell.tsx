@@ -53,6 +53,7 @@ interface AppShellProps {
   onAnalyzeGraph: () => void;
   onGraphViewSelected: () => void;
   onApiViewSelected: () => void;
+  onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode", model: string) => Promise<import("../lib/commands").GeneratedGraphDiagram>;
   onOpenGraphSource: (relativePath: string, line: number | null) => void;
   revealPath: string | null;
   graphSourceLocation: { relativePath: string; line: number | null } | null;
@@ -215,6 +216,7 @@ function AppShell(props: AppShellProps) {
             projectAvailable={props.project !== null}
             onAnalyze={props.onAnalyzeGraph}
             onSelectionChanged={setSelectedGraphNodeId}
+            onGenerateAiDiagram={props.onGenerateAiDiagram}
             onOpenSource={(relativePath, line) => {
               setActiveView("project");
               props.onOpenGraphSource(relativePath, line);

@@ -8,6 +8,7 @@ import {
   analyzeSpringProject,
   cancelTask,
   getGraphSnapshot,
+  generateGraphDiagram,
   getLastProject,
   getGitStatus,
   getAppInfo,
@@ -254,6 +255,13 @@ function App() {
     }
   }
 
+  async function handleGenerateAiDiagram(provider: "openai" | "anthropic" | "claudeCode", model: string) {
+    const currentProject = project();
+    const snapshot = graphSnapshot();
+    if (!currentProject || !snapshot) throw new Error("먼저 graph를 분석해 주세요.");
+    return generateGraphDiagram({ projectPath: currentProject.path, snapshot, provider, model });
+  }
+
   function handleOpenGraphSource(relativePath: string, line: number | null) {
     const entry = scanResult()?.entries.find((item) => item.relativePath === relativePath) ?? null;
     setSelectedEntry(entry);
@@ -297,6 +305,7 @@ function App() {
       onAnalyzeGraph={() => void handleAnalyzeGraph()}
       onGraphViewSelected={() => void loadLatestGraph()}
       onApiViewSelected={() => void loadLatestGraph()}
+      onGenerateAiDiagram={handleGenerateAiDiagram}
       onOpenGraphSource={handleOpenGraphSource}
       revealPath={revealPath()}
       graphSourceLocation={graphSourceLocation()}
