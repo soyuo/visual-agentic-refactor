@@ -276,19 +276,41 @@ function GraphExplorer(props: GraphExplorerProps) {
     const diagram = aiDiagram()?.diagram;
     const result = new Map<string, { node: GraphDiagramNode; x: number; y: number }>();
     if (!diagram) return { positions: result, width: 1000, height: 600 };
-    const layers = new Map<number, GraphDiagramNode[]>();
-    for (const node of diagram.nodes) {
-      const layer = layers.get(node.layer) ?? [];
-      layer.push(node); layers.set(node.layer, layer);
+    // Compact sparse layer numbers (0, 3, 7 -> 0, 1, 2) so columns sit side by side.
+    const layerIndex = new Map([...new Set(diagram.nodes.map((node) => node.layer))].sort((a, b) => a - b).map((layer, index) => [layer, index]));
+    const column = (node: GraphDiagramNode) => layerIndex.get(node.layer) ?? 0;
+    const layers: GraphDiagramNode[][] = [];
+    for (const node of diagram.nodes) (layers[column(node)] ??= []).push(node);
+    const neighbours = new Map<string, string[]>();
+    for (const edge of diagram.edges) {
+      neighbours.set(edge.source, [...(neighbours.get(edge.source) ?? []), edge.target]);
+      neighbours.set(edge.target, [...(neighbours.get(edge.target) ?? []), edge.source]);
     }
-    const maxNodes = Math.max(1, ...Array.from(layers.values()).map((nodes) => nodes.length));
+    // Barycenter ordering: sweep a few times, placing each node near the
+    // average row of its connected nodes to cut crossings and long edges.
+    const row = new Map<string, number>();
+    const assignRows = () => layers.forEach((nodes) => nodes?.forEach((node, index) => row.set(node.id, index / Math.max(1, nodes.length - 1))));
+    assignRows();
+    for (let sweep = 0; sweep < 4; sweep++) {
+      for (const nodes of layers) {
+        if (!nodes) continue;
+        const score = new Map(nodes.map((node) => {
+          const linked = (neighbours.get(node.id) ?? []).map((id) => row.get(id)).filter((value): value is number => value !== undefined);
+          return [node.id, linked.length ? linked.reduce((sum, value) => sum + value, 0) / linked.length : row.get(node.id) ?? 0];
+        }));
+        nodes.sort((a, b) => score.get(a.id)! - score.get(b.id)!);
+      }
+      assignRows();
+    }
+    const maxNodes = Math.max(1, ...layers.map((nodes) => nodes?.length ?? 0));
     const height = Math.max(600, 200 + maxNodes * 110);
-    const width = Math.max(1000, 180 + (Math.max(0, ...layers.keys()) + 1) * 220);
-    for (const [layer, nodes] of layers) {
+    const width = Math.max(1000, 180 + layers.length * 220);
+    layers.forEach((nodes, index) => {
+      if (!nodes) return;
       const gap = Math.min(110, (height - 120) / Math.max(1, nodes.length));
       const startY = (height - gap * (nodes.length - 1)) / 2;
-      nodes.forEach((node, index) => result.set(node.id, { node, x: 110 + layer * 220, y: startY + index * gap }));
-    }
+      nodes.forEach((node, position) => result.set(node.id, { node: { ...node, layer: index }, x: 110 + index * 220, y: startY + position * gap }));
+    });
     return { positions: result, width, height };
   });
   const aiPositions = createMemo(() => aiLayout().positions);
