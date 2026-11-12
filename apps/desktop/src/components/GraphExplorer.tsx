@@ -303,10 +303,12 @@ function GraphExplorer(props: GraphExplorerProps) {
             <Show when={aiError()}><p class="project-error" role="alert">{aiError()}</p></Show>
             <Show when={aiDiagram()}>{(generated) => <section class="graph-ai-diagram" aria-label="AI 계층 구조도">
               <h2>{generated().diagram.title ?? "AI 계층 구조도"}</h2>
-              <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} role="img" aria-label="AI가 생성한 계층형 구조도">
+              <svg class="graph-canvas" viewBox={`0 0 ${aiLayout().width} ${aiLayout().height}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => setDragOrigin(null)} role="img" aria-label="AI가 생성한 계층형 구조도">
                 <defs><marker id="ai-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="#9ca9bc" /></marker></defs>
+                <g transform={`translate(${offset().x} ${offset().y}) scale(${zoom()})`}>
                 <For each={generated().diagram.edges}>{(edge) => { const source = aiPositions().get(edge.source); const target = aiPositions().get(edge.target); return source && target ? <g><line {...edgeEndpoints(source, target)} marker-end="url(#ai-graph-arrow)" /><title>{edge.label}</title></g> : null; }}</For>
                 <For each={generated().diagram.nodes}>{(node) => { const position = aiPositions().get(node.id); return position ? <g class="graph-node" transform={`translate(${position.x} ${position.y})`}><rect x="-70" y="-24" width="140" height="48" rx="10" /><text text-anchor="middle" y="4">{node.label.slice(0, 22)}</text><title>{node.label} · {node.type}</title></g> : null; }}</For>
+                </g>
               </svg>
             </section>}</Show>
             <Show when={view() === "architecture" && !aiDiagram()}>
