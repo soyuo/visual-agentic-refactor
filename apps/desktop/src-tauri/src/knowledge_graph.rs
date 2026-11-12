@@ -549,6 +549,7 @@ impl SourceLanguage {
             Self::Java => "java",
             Self::JavaScript => "javascript",
             Self::TypeScript => "typescript",
+            Self::Python => "python",
         }
     }
 }
