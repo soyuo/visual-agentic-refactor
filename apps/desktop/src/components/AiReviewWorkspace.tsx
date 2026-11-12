@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onMount, Show } from "solid-js";
+import { createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import {
   cancelTask,
@@ -11,6 +11,8 @@ import {
   disconnectOpenAiSubscription,
   deleteProviderCredential,
   listProviderCredentials,
+  listAiModels,
+  type AiModelOption,
   getOpenAiSubscriptionStatus,
   listReviewSessions,
   listFixTasks,
@@ -54,6 +56,9 @@ const providers: Array<{ id: CredentialProvider; label: string }> = [
 ];
 
 interface AiReviewWorkspaceProps {
+  /** `review` runs reviews and records decisions; `fixes` works on approved findings. */
+  mode: "review" | "fixes";
+  onNavigate: (view: "project" | "graph" | "review" | "fixes") => void;
   project: OpenProjectResponse | null;
   selectedEntry: ScanEntry | null;
   graphSnapshot: GraphSnapshot | null;
@@ -73,11 +78,12 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
   const [consentDialogOpen, setConsentDialogOpen] = createSignal(false);
   const [consentDecision, setConsentDecision] = createSignal<"approved" | "rejected" | "cancelled" | null>(null);
   const [consentScopeKey, setConsentScopeKey] = createSignal("");
-  const [scopeKind, setScopeKind] = createSignal<"file" | "graphNode">("file");
+  const [scopeKind, setScopeKind] = createSignal<"file" | "graphNode">(props.selectedGraphNodeId ? "graphNode" : "file");
   const [contextPreview, setContextPreview] = createSignal<ReviewContextPreview | null>(null);
   const [previewLoading, setPreviewLoading] = createSignal(false);
   const [previewError, setPreviewError] = createSignal<string | null>(null);
   const [model, setModel] = createSignal("");
+  const [modelOptions, setModelOptions] = createSignal<AiModelOption[]>([]);
   const [reviewRunning, setReviewRunning] = createSignal(false);
   const [reviewTaskId, setReviewTaskId] = createSignal<number | null>(null);
   const [reviewError, setReviewError] = createSignal<string | null>(null);
@@ -109,6 +115,22 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
       : null;
   };
   const activeCredential = () => statuses().find((status) => status.provider === selectedProvider());
+  const providerReady = () => Boolean(activeCredential()?.configured);
+  let modelRequestVersion = 0;
+  createEffect(() => {
+    const provider = selectedProvider();
+    const version = ++modelRequestVersion;
+    setModelOptions([]);
+    listAiModels(provider)
+      .then((options) => {
+        if (version !== modelRequestVersion) return;
+        setModelOptions(options);
+        if (!model().trim() && options[0]) setModel(options[0].id);
+      })
+      .catch(() => {
+        if (version === modelRequestVersion) setModelOptions([]);
+      });
+  });
   const selectedGraphNode = () => props.graphSnapshot?.nodes.find((node) => node.nodeId === props.selectedGraphNodeId) ?? null;
   const graphNodePath = () => {
     const node = selectedGraphNode();
@@ -622,15 +644,65 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
     <div class="ai-review-workspace">
       <div class="content-heading">
         <div>
-          <p class="eyebrow">AI REVIEW · PRIVACY</p>
-          <h1>AI 리뷰 설정</h1>
+          <p class="eyebrow">{props.mode === "fixes" ? "PATCH · VERIFICATION" : "AI REVIEW · PRIVACY"}</p>
+          <h1>{props.mode === "fixes" ? "수정 및 검증" : "AI 리뷰"}</h1>
           <p class="content-description">
-            제공자 자격 증명은 운영체제의 보안 저장소에 보관합니다.
+            {props.mode === "fixes"
+              ? "승인한 finding마다 격리된 작업 공간에서 패치를 만들고, diff와 검증 결과를 확인합니다."
+              : "범위를 고르고 전송 문맥을 확인한 뒤 리뷰를 요청하고, finding마다 승인 또는 거절합니다."}
           </p>
         </div>
       </div>
 
-      <section class="ai-settings-card" aria-labelledby="credential-title">
+      <ol class="flow-steps" aria-label="진행 단계">
+        <For each={props.mode === "fixes"
+          ? ["작업 공간 준비", "패치 계획", "패치 생성·적용", "diff 확인", "검증 실행"]
+          : ["제공자 연결", "범위 선택", "문맥 미리보기", "전송 동의", "결과 결정"]}>
+          {(label, index) => <li><span>{index() + 1}</span>{label}</li>}
+        </For>
+      </ol>
+
+      <section class="ai-settings-card review-setup-bar" aria-label="리뷰 제공자와 모델">
+        <div class="review-setup-field">
+          <label for="credential-provider">제공자</label>
+          <select
+            id="credential-provider"
+            value={selectedProvider()}
+            disabled={busyProvider() !== null}
+            onChange={(event) => {
+              setSelectedProvider(event.currentTarget.value as CredentialProvider);
+              setCredential("");
+            }}
+          >
+            {providers.map((provider) => <option value={provider.id}>{provider.label}</option>)}
+          </select>
+        </div>
+        <div class="review-setup-field">
+          <label for="review-model">모델 ID</label>
+          <input
+            id="review-model"
+            type="text"
+            list="review-model-options"
+            value={model()}
+            maxlength={128}
+            autocomplete="off"
+            spellcheck={false}
+            placeholder="목록에서 고르거나 직접 입력"
+            onInput={(event) => setModel(event.currentTarget.value)}
+          />
+          <datalist id="review-model-options">
+            <For each={modelOptions()}>{(option) => <option value={option.id}>{option.displayName}</option>}</For>
+          </datalist>
+        </div>
+        <span class="status-chip" classList={{ ok: providerReady() }}>
+          {providerReady() ? "연결됨" : "연결 필요"}
+        </span>
+      </section>
+
+      <Show when={props.mode === "review"}>
+      <details class="ai-settings-card credential-details" open={!loading() && !providerReady()}>
+      <summary><strong>제공자 연결 관리</strong><span>API 키 · 구독 로그인</span></summary>
+      <section aria-labelledby="credential-title">
         <div class="ai-settings-heading">
           <div>
             <h2 id="credential-title">제공자 자격 증명</h2>
@@ -696,18 +768,6 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
 
         <Show when={selectedProvider() !== "claudeCode" && selectedProvider() !== "codex"}>
         <form class="credential-form" onSubmit={(event) => { event.preventDefault(); void saveSelectedCredential(); }}>
-          <label for="credential-provider">제공자</label>
-          <select
-            id="credential-provider"
-            value={selectedProvider()}
-            disabled={busyProvider() !== null}
-            onChange={(event) => {
-              setSelectedProvider(event.currentTarget.value as CredentialProvider);
-              setCredential("");
-            }}
-          >
-            {providers.map((provider) => <option value={provider.id}>{provider.label}</option>)}
-          </select>
           <label for="provider-credential">API 키</label>
           <input
             id="provider-credential"
@@ -733,6 +793,7 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         {error() && <p class="inline-error" role="alert">{error()}</p>}
         {notice() && <p class="credential-notice" role="status">{notice()}</p>}
       </section>
+      </details>
 
       <section class="ai-transfer-note" aria-labelledby="transfer-note-title">
         <span class="transfer-shield" aria-hidden="true">!</span>
@@ -740,20 +801,6 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
           <h2 id="transfer-note-title">외부 전송 동의</h2>
           <p>검토를 시작하면 미리 본 문맥이 선택한 외부 AI 제공자에게 전송됩니다. 요청마다 전송 범위와 모델을 확인하고 동의해야 합니다.</p>
           <strong>API 키는 운영체제 자격 증명 저장소에 보관하며, 리뷰 세션에는 전체 문맥을 저장하지 않습니다.</strong>
-        </div>
-        <div class="review-model-field">
-          <label for="review-model">모델 ID</label>
-          <input
-            id="review-model"
-            type="text"
-            value={model()}
-            maxlength={128}
-            autocomplete="off"
-            spellcheck={false}
-            placeholder="제공자가 지원하는 모델 ID"
-            onInput={(event) => setModel(event.currentTarget.value)}
-          />
-          <span>모델 ID는 제공자에서 발급한 값을 입력하세요.</span>
         </div>
       </section>
 
@@ -789,7 +836,13 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
           <p class="inline-error" role="status">민감 정보 가능성이 있는 파일 이름이 감지되어 전송 대상에서 제외했습니다.</p>
         </Show>
         <Show when={!props.project || !currentScope()}>
-          <p class="muted-message">미리보려면 분석 가능한 파일을 선택하거나, 코드 그래프에서 소스 위치가 있는 항목을 선택하세요.</p>
+          <div class="empty-hint">
+            <p>미리보려면 분석 가능한 파일을 선택하거나, 코드 그래프에서 소스 위치가 있는 항목을 선택하세요.</p>
+            <div>
+              <button class="secondary-button" type="button" onClick={() => props.onNavigate("project")}>파일 선택하러 가기</button>
+              <button class="secondary-button" type="button" onClick={() => props.onNavigate("graph")}>그래프에서 선택</button>
+            </div>
+          </div>
         </Show>
         <Show when={currentScope() && !activeCredential()?.configured}>
           <p class="muted-message">문맥 미리보기는 로컬에서 구성합니다. 외부 전송 동의를 검토하려면 제공자 자격 증명을 설정하세요.</p>
@@ -825,12 +878,13 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
         <Show when={reviewError()}><p class="inline-error" role="alert">{reviewError()}</p></Show>
         <Show when={reviewNotice()}><p class="credential-notice" role="status">{reviewNotice()}</p></Show>
       </section>
+      </Show>
 
       <section class="ai-settings-card review-history" aria-labelledby="review-history-title">
         <div class="ai-settings-heading">
           <div>
-            <h2 id="review-history-title">저장된 리뷰</h2>
-            <p>검증된 finding과 사용자 결정을 로컬에서 다시 불러옵니다.</p>
+            <h2 id="review-history-title">{props.mode === "fixes" ? "수정할 리뷰 선택" : "저장된 리뷰"}</h2>
+            <p>{props.mode === "fixes" ? "승인한 finding만 표시합니다." : "검증된 finding과 사용자 결정을 로컬에서 다시 불러옵니다."}</p>
           </div>
         </div>
         <Show when={sessionLoading()}><p role="status">리뷰 목록을 불러오는 중입니다…</p></Show>
@@ -866,7 +920,13 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
               <p class="muted-message">검증된 finding이 없습니다.</p>
             </Show>
             <div class="review-finding-list">
-              {session().findings.map((finding) => {
+              <Show when={props.mode === "fixes" && session().findings.every((finding) => finding.decision.status !== "approved")}>
+                <div class="empty-hint">
+                  <p>이 리뷰에 승인한 finding이 없습니다. AI 리뷰 화면에서 수정할 finding을 승인하세요.</p>
+                  <div><button class="secondary-button" type="button" onClick={() => props.onNavigate("review")}>AI 리뷰로 이동</button></div>
+                </div>
+              </Show>
+              {session().findings.filter((finding) => props.mode === "review" || finding.decision.status === "approved").map((finding) => {
                 const result = finding.finding;
                 const decision = finding.decision;
                 const decisionKey = `${session().sessionId}:${finding.findingId}`;
@@ -894,14 +954,20 @@ function AiReviewWorkspace(props: AiReviewWorkspaceProps) {
                   <Show when={result.affectedSymbols.length > 0}><p><strong>관련 심볼:</strong> {result.affectedSymbols.join(", ")}</p></Show>
                   <Show when={result.suggestion}><p><strong>제안:</strong> {result.suggestion}</p></Show>
                   <Show when={result.testSuggestion}><p><strong>검증 제안:</strong> {result.testSuggestion}</p></Show>
-                  <div class="finding-decision-row">
+                  <div class="finding-decision-row" hidden={props.mode === "fixes"}>
                     <span role="status">사용자 결정: {findingDecisionLabel(decision.status)}{decision.decidedAtUnixMs ? ` · ${new Date(decision.decidedAtUnixMs).toLocaleString()}` : ""}</span>
                     <div role="group" aria-label={`${result.title} 결정`}>
                       <button class="secondary-button" type="button" disabled={saving || session().validationState === "invalid"} aria-pressed={decision.status === "approved"} onClick={() => void decideFinding(finding.findingId, "approved")}>{saving ? "저장 중…" : "승인"}</button>
                       <button class="secondary-button" type="button" disabled={saving || session().validationState === "invalid"} aria-pressed={decision.status === "rejected"} onClick={() => void decideFinding(finding.findingId, "rejected")}>{saving ? "저장 중…" : "거절"}</button>
                     </div>
                   </div>
-                  <Show when={decision.status === "approved"}>
+                  <Show when={props.mode === "review" && decision.status === "approved"}>
+                    <div class="finding-decision-row">
+                      <span role="status">수정 작업: {fixTask?.status ?? "아직 없음"}</span>
+                      <button class="secondary-button" type="button" onClick={() => props.onNavigate("fixes")}>수정 및 검증으로 이동</button>
+                    </div>
+                  </Show>
+                  <Show when={props.mode === "fixes" && decision.status === "approved"}>
                     <div class="finding-decision-row">
                       <span role="status">수정 작업: {fixTask?.status ?? "없음"}</span>
                       <button class="secondary-button" type="button" disabled={Boolean(fixTask) || creatingFixTaskId() !== null} onClick={() => void createFindingFixTask(finding.findingId)}>

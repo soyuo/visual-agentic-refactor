@@ -14,6 +14,8 @@ interface GraphExplorerProps {
   onAnalyze: () => void;
   onOpenSource: (relativePath: string, line: number | null) => void;
   onSelectionChanged: (nodeId: string | null) => void;
+  /** Opens AI review scoped to the selected node and its contained children. */
+  onRequestReview: (nodeId: string) => void;
   onGenerateAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<GeneratedGraphDiagram>;
   onLoadAiDiagram: (provider: "openai" | "anthropic" | "claudeCode" | "codex", model: string) => Promise<GeneratedGraphDiagram | null>;
   onListAiModels: (provider: "openai" | "anthropic" | "claudeCode" | "codex") => Promise<AiModelOption[]>;
@@ -434,6 +436,7 @@ function GraphExplorer(props: GraphExplorerProps) {
                         node().filePath ?? node().sourceEvidence!.relativePath,
                         node().sourceEvidence?.startLine ?? null,
                       )}>파일 위치 열기</button>
+                      <button class="primary-button" type="button" onClick={() => props.onRequestReview(node().nodeId)}>이 항목 AI 리뷰</button>
                     </Show>
                     <h3>연결 관계 ({selectedEdges().length})</h3>
                     <ul class="graph-relation-list">

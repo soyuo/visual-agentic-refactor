@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import type {
   DetectionResult,
   DetectionStatus,
@@ -14,6 +14,7 @@ import FileTree from "./FileTree";
 import GraphExplorer from "./GraphExplorer";
 import ApiExplorer from "./ApiExplorer";
 import AiReviewWorkspace from "./AiReviewWorkspace";
+import SourcePreview from "./SourcePreview";
 
 export type CoreStatus =
   | { kind: "loading" }
@@ -61,12 +62,14 @@ interface AppShellProps {
   graphSourceLocation: { relativePath: string; line: number | null } | null;
 }
 
-const navigationItems = [
-  { label: "프로젝트 탐색", number: "01", active: true },
-  { label: "코드 그래프", number: "02", active: true },
-  { label: "API 목록", number: "03", active: true },
-  { label: "AI 리뷰", number: "04", active: true },
-  { label: "수정 및 검증", number: "05", active: true },
+type ViewId = "project" | "graph" | "api" | "review" | "fixes";
+
+const navigationItems: Array<{ id: ViewId; label: string; number: string; needsProject: boolean }> = [
+  { id: "project", label: "프로젝트 탐색", number: "01", needsProject: false },
+  { id: "graph", label: "코드 그래프", number: "02", needsProject: true },
+  { id: "api", label: "API 목록", number: "03", needsProject: true },
+  { id: "review", label: "AI 리뷰", number: "04", needsProject: true },
+  { id: "fixes", label: "수정 및 검증", number: "05", needsProject: true },
 ];
 
 function getCoreStatusLabel(status: CoreStatus): string {
@@ -119,7 +122,14 @@ function getGitStatusLabel(status: GitStatusResponse["state"]): string {
 }
 
 function AppShell(props: AppShellProps) {
-  const [activeView, setActiveView] = createSignal<"project" | "graph" | "api" | "review" | "fixes">("project");
+  const [activeView, setActiveView] = createSignal<ViewId>("project");
+  const [showUndetected, setShowUndetected] = createSignal(false);
+  const navigate = (view: ViewId) => {
+    setActiveView(view);
+    if (view === "graph") props.onGraphViewSelected();
+    if (view === "api") props.onApiViewSelected();
+  };
+  const activeLabel = () => navigationItems.find((item) => item.id === activeView())?.label ?? "";
   const [selectedGraphNodeId, setSelectedGraphNodeId] = createSignal<string | null>(null);
   const detectionRows = () => {
     const detection = props.scanResult?.projectDetection;
@@ -163,40 +173,42 @@ function AppShell(props: AppShellProps) {
         <div class="topbar-context">
           <span>작업 공간</span>
           <span class="breadcrumb-separator">/</span>
-          <strong>{activeView() === "review" ? "AI 리뷰" : activeView() === "graph" ? "코드 그래프" : "프로젝트 탐색"}</strong>
+          <Show when={props.project}>{(project) => <><span class="breadcrumb-project" title={project().path}>{project().name}</span><span class="breadcrumb-separator">/</span></>}</Show>
+          <strong>{activeLabel()}</strong>
         </div>
-        <div class="local-badge"><span /> 로컬 작업 공간</div>
+        <div class="topbar-status">
+          <Show when={props.taskState}>{(task) => (
+            <span class="topbar-task" data-state={task().event.status} role="status" title={task().event.message ?? undefined}>
+              <i /> {getTaskStatusLabel(task())}{task().event.total != null ? ` · ${task().event.completed}/${task().event.total}` : ""}
+              <Show when={task().event.status === "running" && !task().cancellationRequested}>
+                <button type="button" class="text-button" onClick={props.onCancelTask}>취소</button>
+              </Show>
+            </span>
+          )}</Show>
+          <div class="local-badge"><span /> 로컬 작업 공간</div>
+        </div>
       </header>
 
       <aside class="sidebar" aria-label="주 탐색">
         <p class="section-label">WORKSPACE</p>
         <nav class="navigation-list">
-          {navigationItems.map((item) => (
-            <button
-              class="navigation-item"
-              classList={{ active: item.active && ((item.label === "프로젝트 탐색" && activeView() === "project") || (item.label === "코드 그래프" && activeView() === "graph") || (item.label === "API 목록" && activeView() === "api") || (item.label === "AI 리뷰" && activeView() === "review") || (item.label === "수정 및 검증" && activeView() === "fixes")) }}
-              type="button"
-              disabled={!item.active}
-              aria-current={((item.label === "코드 그래프" && activeView() === "graph") || (item.label === "API 목록" && activeView() === "api") || (item.label === "프로젝트 탐색" && activeView() === "project") || (item.label === "AI 리뷰" && activeView() === "review") || (item.label === "수정 및 검증" && activeView() === "fixes")) ? "page" : undefined}
-              onClick={() => {
-                if (item.label === "프로젝트 탐색") setActiveView("project");
-                if (item.label === "코드 그래프") {
-                  setActiveView("graph");
-                  props.onGraphViewSelected();
-                }
-                if (item.label === "API 목록") {
-                  setActiveView("api");
-                  props.onApiViewSelected();
-                }
-                if (item.label === "AI 리뷰") setActiveView("review");
-                if (item.label === "수정 및 검증") setActiveView("fixes");
-              }}
-              title={item.active ? undefined : "아직 제공되지 않는 화면입니다."}
-            >
-              <span class="navigation-number">{item.number}</span>
-              <span class="navigation-label">{item.label}</span>
-            </button>
-          ))}
+          {navigationItems.map((item) => {
+            const locked = () => item.needsProject && !props.project;
+            return (
+              <button
+                class="navigation-item"
+                classList={{ active: activeView() === item.id }}
+                type="button"
+                disabled={locked()}
+                aria-current={activeView() === item.id ? "page" : undefined}
+                onClick={() => navigate(item.id)}
+                title={locked() ? "프로젝트를 먼저 열어 주세요." : undefined}
+              >
+                <span class="navigation-number">{item.number}</span>
+                <span class="navigation-label">{item.label}</span>
+              </button>
+            );
+          })}
         </nav>
 
         <div class="sidebar-note">
@@ -218,6 +230,10 @@ function AppShell(props: AppShellProps) {
             projectAvailable={props.project !== null}
             onAnalyze={props.onAnalyzeGraph}
             onSelectionChanged={setSelectedGraphNodeId}
+            onRequestReview={(nodeId) => {
+              setSelectedGraphNodeId(nodeId);
+              navigate("review");
+            }}
             onGenerateAiDiagram={props.onGenerateAiDiagram}
             onLoadAiDiagram={props.onLoadAiDiagram}
             onListAiModels={props.onListAiModels}
@@ -240,6 +256,8 @@ function AppShell(props: AppShellProps) {
           />
         ) : activeView() === "review" ? (
           <AiReviewWorkspace
+            mode="review"
+            onNavigate={navigate}
             project={props.project}
             selectedEntry={props.selectedEntry}
             graphSnapshot={props.graphSnapshot}
@@ -247,6 +265,8 @@ function AppShell(props: AppShellProps) {
           />
         ) : activeView() === "fixes" ? (
           <AiReviewWorkspace
+            mode="fixes"
+            onNavigate={navigate}
             project={props.project}
             selectedEntry={props.selectedEntry}
             graphSnapshot={props.graphSnapshot}
@@ -399,7 +419,7 @@ function AppShell(props: AppShellProps) {
                 <section class="project-detection" aria-labelledby="project-detection-title">
                   <h3 id="project-detection-title">기술 스택 감지</h3>
                   <ul class="project-detection-list">
-                    {detectionRows().map(({ label, result }) => (
+                    {detectionRows().filter(({ result }) => showUndetected() || result.status !== "notDetected").map(({ label, result }) => (
                       <li class="project-detection-item">
                         <div class="project-detection-heading">
                           <strong>{label}</strong>
@@ -426,6 +446,13 @@ function AppShell(props: AppShellProps) {
                       </li>
                     ))}
                   </ul>
+                  <Show when={detectionRows().some(({ result }) => result.status === "notDetected")}>
+                    <button class="text-button" type="button" onClick={() => setShowUndetected(!showUndetected())}>
+                      {showUndetected()
+                        ? "감지되지 않은 항목 숨기기"
+                        : `감지되지 않은 항목 ${detectionRows().filter(({ result }) => result.status === "notDetected").length}개 보기`}
+                    </button>
+                  </Show>
                 </section>
                 <div class="file-explorer-heading">
                   <h3 id="file-tree-title">파일 트리</h3>
@@ -462,6 +489,15 @@ function AppShell(props: AppShellProps) {
                       revealPath={props.revealPath}
                       onSelect={props.onSelectEntry}
                     />
+                    <Show when={props.project && props.selectedEntry?.kind === "file" && props.selectedEntry.fileStatus === "eligible" ? props.selectedEntry : null} keyed>
+                      {(entry) => (
+                        <SourcePreview
+                          projectPath={props.project!.path}
+                          relativePath={entry.relativePath}
+                          line={props.graphSourceLocation?.relativePath === entry.relativePath ? props.graphSourceLocation.line : null}
+                        />
+                      )}
+                    </Show>
                   </>
                 ) : (
                   <div class="scan-empty-state" role="status">
