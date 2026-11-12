@@ -4,6 +4,7 @@ pub mod context;
 pub mod credentials;
 pub mod findings;
 pub mod fix_patch_agent;
+pub mod pr_maintenance;
 pub mod fix_tasks;
 pub mod git;
 pub mod github;

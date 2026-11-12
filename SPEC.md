@@ -340,6 +340,17 @@ fails.
 Remote push and PR creation require explicit user approval. PR summaries may
 include purpose, findings, changed files, tests, risks, and unverified items.
 
+PR maintenance (conflicts and CI) runs in an isolated per-PR worktree
+(`<parent>/.visual-agentic-refactor-workspaces/pr-<n>`). AI conflict resolution
+may only rewrite the conflicted files and is rejected if conflict markers
+remain. AI CI repair sends the failed-run log and only the tracked files it
+references (sensitive files excluded), after a transfer preview; its patch may
+touch only those files and must not weaken or skip checks. Commit, push, and
+merge each need user approval, push is never forced, and push/merge are pinned
+to the expected head SHA; merge requires a mergeable PR with passing checks. A
+CI watch polls until checks succeed; automatic repair-and-push is opt-in and
+limited to three attempts, one per failing head.
+
 ## 14. Verification Engine
 
 Run policy checks, build/compile, lint/static checks, unit, integration and

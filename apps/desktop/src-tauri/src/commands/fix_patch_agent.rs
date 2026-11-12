@@ -157,7 +157,7 @@ fn read_plan_file(workspace: &Path, relative: &str) -> Result<String, CommandErr
 }
 
 /// Strips an optional Markdown fence and ensures a trailing newline for `git apply`.
-fn normalize_patch(raw: &str) -> String {
+pub(crate) fn normalize_patch(raw: &str) -> String {
     let trimmed = raw.trim();
     let body = ["```diff", "```patch", "```"]
         .iter()
