@@ -326,6 +326,24 @@ fn normalize_diagram(
     if nodes.is_empty() {
         return Err(invalid("AI 구조도 응답에 그릴 수 있는 node가 없습니다."));
     }
+    // Models often reference nodes by label or with different casing; map
+    // every alias back to the canonical id so those edges are not lost.
+    let mut aliases = std::collections::BTreeMap::new();
+    for node in &nodes {
+        let id = node["id"].as_str().unwrap_or_default().to_owned();
+        let label = node["label"].as_str().unwrap_or_default();
+        aliases.entry(label.trim().to_lowercase()).or_insert_with(|| id.clone());
+        aliases.insert(id.to_lowercase(), id.clone());
+    }
+    for id in layers.keys() {
+        aliases.insert(id.clone(), id.clone());
+    }
+    let resolve = |name: String| {
+        aliases
+            .get(&name)
+            .or_else(|| aliases.get(&name.trim().to_lowercase()))
+            .cloned()
+    };
     let mut edge_keys = std::collections::BTreeSet::new();
     let mut edges = Vec::new();
     for edge in value.get("edges").and_then(Value::as_array).into_iter().flatten() {
@@ -333,9 +351,9 @@ fn normalize_diagram(
         else {
             continue;
         };
-        if !layers.contains_key(&source) || !layers.contains_key(&target) {
+        let (Some(source), Some(target)) = (resolve(source), resolve(target)) else {
             continue;
-        }
+        };
         // Reverse and same-layer edges are kept; the UI routes them as curves.
         if source == target || !edge_keys.insert((source.clone(), target.clone())) {
             continue;
@@ -489,5 +507,24 @@ mod diagram_tests {
     #[test]
     fn rejects_diagram_without_nodes() {
         assert!(normalize_diagram(json!({ "findings": [] }), None).is_err());
+    }
+
+    #[test]
+    fn normalize_resolves_edges_by_label_and_case() {
+        let raw = json!({
+            "nodes": [
+                {"id": "A", "label": "Order Controller", "layer": 0},
+                {"id": "B", "label": "Order Service", "layer": 1}
+            ],
+            "edges": [
+                {"source": "Order Controller", "target": "b", "label": "calls"},
+                {"source": "a", "target": "B"}
+            ]
+        });
+        let diagram = normalize_diagram(raw, None).unwrap();
+        let edges = diagram["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["source"], "A");
+        assert_eq!(edges[0]["target"], "B");
     }
 }
