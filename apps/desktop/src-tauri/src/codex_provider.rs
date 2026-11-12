@@ -47,40 +47,35 @@ impl AiProvider for CodexProvider {
         validate_request(request, &descriptor)?;
         ensure_not_cancelled(task)?;
         let executable = resolve_command("codex").ok_or_else(cli_unavailable)?;
-        let mut child = Command::new(executable)
-            .current_dir(&self.project_root)
-            .args([
-                "exec",
-                "--json",
-                "--ephemeral",
-                "--sandbox",
-                "read-only",
-                "--skip-git-repo-check",
-                "--model",
-                request.model.as_str(),
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| cli_unavailable())?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(request.context.as_bytes())
-                .await
-                .map_err(|_| cli_unavailable())?;
-        }
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|_| cli_unavailable())?;
-        ensure_not_cancelled(task)?;
+        let output = run_exec(
+            &executable,
+            &request.context,
+            &request.model,
+            &self.project_root,
+            true,
+        )
+        .await?;
+        let output = if !output.status.success() && is_unsupported_model(&output) {
+            run_exec(
+                &executable,
+                &request.context,
+                &request.model,
+                &self.project_root,
+                false,
+            )
+            .await?
+        } else {
+            output
+        };
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+            let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
             if stderr.contains("login")
                 || stderr.contains("authenticate")
                 || stderr.contains("unauthorized")
+                || stdout.contains("login")
+                || stdout.contains("authenticate")
+                || stdout.contains("unauthorized")
             {
                 launch_login(&self.project_root);
                 return Err(ProviderError::new(
@@ -88,13 +83,85 @@ impl AiProvider for CodexProvider {
                     "Codex 로그인 창을 열었습니다. Codex 앱에서 ChatGPT 계정 로그인을 완료한 뒤 다시 시도해 주세요.",
                 ));
             }
+            let detail = extract_error_detail(&output).unwrap_or_else(|| "알 수 없는 오류".into());
             return Err(ProviderError::new(
                 ProviderErrorCode::ProviderUnavailable,
-                "공식 Codex CLI 요청에 실패했습니다.",
+                format!("Codex 요청에 실패했습니다: {detail}"),
             ));
         }
         parse_output(&output.stdout, &request.model)
     }
+}
+
+async fn run_exec(
+    executable: &std::path::Path,
+    context: &str,
+    model: &str,
+    project_root: &PathBuf,
+    include_model: bool,
+) -> Result<std::process::Output, ProviderError> {
+    let mut command = Command::new(executable);
+    command.current_dir(project_root).args([
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+    ]);
+    if include_model {
+        command.args(["--model", model]);
+    }
+    command.arg("-");
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| cli_unavailable())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(context.as_bytes())
+            .await
+            .map_err(|_| cli_unavailable())?;
+    }
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|_| cli_unavailable())?;
+    Ok(output)
+}
+
+fn is_unsupported_model(output: &std::process::Output) -> bool {
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase();
+    text.contains("model") && (text.contains("not supported") || text.contains("unsupported"))
+}
+
+fn extract_error_detail(output: &std::process::Output) -> Option<String> {
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            if let Some(message) = value.get("message").and_then(Value::as_str) {
+                return Some(message.to_owned());
+            }
+            if let Some(message) = value
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+            {
+                return Some(message.to_owned());
+            }
+        }
+    }
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .map(str::to_owned)
 }
 
 pub fn is_logged_in() -> bool {
@@ -208,5 +275,23 @@ mod tests {
         assert_eq!(response.provider_id, "codex");
         assert_eq!(response.model, "gpt-5-codex");
         assert_eq!(response.structured_output["title"], "Architecture");
+    }
+
+    #[test]
+    fn detects_chatgpt_plan_model_rejection_for_fallback() {
+        use std::os::windows::process::ExitStatusExt;
+
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1),
+            stdout: br#"{"type":"error","message":"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account."}"#.to_vec(),
+            stderr: Vec::new(),
+        };
+        assert!(is_unsupported_model(&output));
+        assert_eq!(
+            extract_error_detail(&output).as_deref(),
+            Some(
+                "The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account."
+            )
+        );
     }
 }
